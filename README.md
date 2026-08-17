@@ -1,0 +1,112 @@
+# DSH Dock（V0.2）
+
+**在 Obsidian 桌面端内启动官方 DeepSeek Harness Web（127.0.0.1:3080）并嵌入为面板。**
+
+与 `obsidian-harness-like` 那种"在插件里自研 agent 循环"的路线相反：本插件**零自研 DSH 能力**（官方 Web UI 原样嵌入，外观美化只作用于插件外壳：工具栏/状态胶囊/加载与错误态），只做三件事——
+
+1. **定位**官方 dsh CLI（`@deepseek-ai/dsh`）；
+2. 用子进程 **spawn** `node <dsh>/lib/bin.js web --host 127.0.0.1 --port 3080`（官方 web profile，端口默认 3080）；
+3. 用 **iframe** 把官方 Web UI 嵌进 Obsidian 面板，卸载插件时 SIGTERM 关停服务。
+
+## 工作原理
+
+```
+Obsidian (Electron)
+ └─ DSH Dock 插件
+     ├─ 定位 dsh: 设置路径 → $DSH_BIN → npm root -g → 常见全局目录
+     ├─ 选择 Node: 设置路径 → PATH 中的 node（系统 Node 最稳定）
+     ├─ 端口探测: node:http（不依赖浏览器 fetch——Obsidian 渲染进程的 CSP
+     │            会屏蔽对 http://127.0.0.1 的 fetch，导致误判）
+     ├─ 已有服务 → 直接挂接（不重复拉起）；否则
+     ├─ spawn: node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>
+     │         env: DSH_HOME=~/.dsh（默认=官方共享；可切换每 vault 隔离/自定义）
+     ├─ 等待就绪（子进程秒退则立即报出真实错误，如 EADDRINUSE，不盲等 120s）
+     └─ iframe 面板 → http://127.0.0.1:<port>/
+```
+
+关键官方事实（已在 `@deepseek-ai/dsh@0.1.0-rc.6` 上验证）：
+
+- `dsh web` 默认绑定 `127.0.0.1`、默认端口 `3080`，`--port 0` 可让 OS 分配空闲端口；
+- 首次启动自动初始化 `$DSH_HOME/profiles/web`（bundles = `dsh-base` + `dsh-web-app`），
+  模块解析走 `$DSH_HOME/profiles/node_modules` 平面符号链接，**无需 pnpm、无需联网**；
+- 默认配置下 SQLite（`node:sqlite`，需 Node ≥ 22.5）**不会打开**（`openAt: never`），
+  所以 Node 20+ 也能跑默认 web profile；只有启用会话全文搜索才需要 Node ≥ 22.5；
+- **DSH_HOME 三档可配**（设置页）：默认「官方共享 `~/.dsh`」与 dsh CLI 完全一致，
+  复用已有配置/会话；可切「每 vault 隔离 `~/.dsh/vaults/<名>-<hash6>`」（hash 消歧，
+  中文名不碰撞）；可「自定义」。不建议放 vault 内（macOS Documents 有 TCC 权限墙）。
+
+## 环境要求
+
+- Obsidian **桌面端**（1.5.0+）
+- 官方 dsh 已安装：`npm install -g @deepseek-ai/dsh`（或把 dsh 包放到可探测位置）
+- 系统有 `node`（≥ 20 即可跑默认配置；会话全文搜索才需 ≥ 22.5）
+
+## 安装
+
+1. `npm install && npm run build`（产物 `main.js` + `manifest.json` + `styles.css`）；
+2. 把这三个文件复制到 vault 的 `.obsidian/plugins/obsidian-dsh-dock/`；
+3. Obsidian：设置 → 第三方插件 → 启用 **DSH Dock**；
+4. 点击侧边栏机器人图标，或运行命令「打开 DSH 面板」。
+
+首次启动会自动初始化 `$DSH_HOME`（默认 `<vault>/.dsh`），几秒内面板出现官方 DSH Web UI。
+
+## 命令
+
+| 命令 | 说明 |
+|---|---|
+| 打开 DSH 面板 | 在右侧栏打开 iframe 面板 |
+| 弹出独立窗口 | 面板进入独立 BrowserWindow（独立渲染进程，性能等同浏览器标签页） |
+| 启动 / 停止 DSH 服务 | 手动控制子进程 |
+| 在系统浏览器中打开 DSH | 用默认浏览器打开 http://127.0.0.1:<port> |
+
+## 设置
+
+- **dsh CLI 路径**：留空自动探测（`DSH_BIN` → `npm root -g` → `/opt/homebrew|/usr/local/lib/node_modules` 等）；
+- **Node 可执行文件**：留空自动选择（系统 `node`，最稳定）；「复用 Obsidian 内置 Node」默认关；
+- **监听端口**：默认 3080；填 0 让 OS 分配；
+- **DSH_HOME 模式**：默认「官方共享 `~/.dsh`」（与 dsh CLI 一致，复用现有配置/会话）；
+  可选「每 vault 隔离 `~/.dsh/vaults/<名>-<hash6>`」（中文名不碰撞、改名不孤儿）；
+  可选「自定义路径」；
+- **随 Obsidian 自动启动**：默认开。
+
+## 与生物题库工具联动
+
+`dsh-tool-obsidian-vault`（官方 dsh-tools 风格的工具插件）负责在 DSH 内部操作 Obsidian vault
+（通过 `obsidian.json` 全局注册表发现 vault）。它跑在 **DSH 侧**（不是 Obsidian 侧）：
+DSH Web 起来后，在 profile 中安装该工具即可在对话中调用。安装方式（DSH 的插件管理）：
+
+```bash
+dsh plugin --profile web add <dsh-tool-obsidian-vault 或其 npm 名>
+```
+
+## 已知限制（V0.2）
+
+- 依赖 `child_process`：Obsidian 桌面端渲染进程可用（社区插件广泛验证），但**移动端不可用**（已 `isDesktopOnly`）；
+- 端口被**非 DSH 服务**占用：子进程 EADDRINUSE 秒退，插件立即报"端口已被占用"，不会盲等；
+  端口被**另一个 DSH** 占用（如本机已开着 `dsh web`）：插件直接挂接已有服务，不再新起进程；
+- 会话全文搜索（启用 `session-query-sqlite` 的 `openAt` 后）需要 Node ≥ 22.5，
+  请确保系统 Node 版本足够；
+- 插件卸载/停用时子进程被 SIGTERM；Obsidian 崩溃时可能残留孤儿进程（重启后插件会挂接回该端口）。
+
+## 冒烟测试（无需 Obsidian）
+
+```bash
+npm run build && npm run smoke
+```
+
+`scripts/smoke.mjs` 会在 3099 端口真实拉起官方 `dsh web`（独立 DSH_HOME），
+验证定位 → spawn → 就绪 → 首页 HTML → 停止 全链路。
+
+## 工程结构
+
+```
+src/launcher.ts   纯启动逻辑（无 Obsidian 依赖，可独立测试）
+src/main.ts       插件生命周期：启动/停止/状态栏/命令/ribbon
+src/view.ts       iframe 面板（Custom Frames 同款做法）
+src/settings.ts   设置页
+scripts/smoke.mjs 端到端冒烟
+```
+
+## License
+
+MIT

@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-dsh-dock",
+  "version": "0.2.0",
+  "description": "Obsidian plugin: dock the official DeepSeek Harness Web at 127.0.0.1:3080.",
+  "type": "module",
+  "scripts": {
+    "dev": "node esbuild.config.mjs --watch",
+    "build": "node esbuild.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "esbuild": "^0.28.0",
+    "obsidian": "^1.7.2",
+    "typescript": "^5.7.0"
+  },
+  "author": "Elervi"
+}

@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-dsh-dock",
+  "name": "DSH Dock",
+  "version": "0.2.0",
+  "minAppVersion": "1.5.0",
+  "description": "把官方 DeepSeek Harness Web (127.0.0.1:3080) 停靠进 Obsidian。零自研：直接运行官方 dsh CLI，嵌入为优雅面板。 / Dock the official DeepSeek Harness Web (127.0.0.1:3080) inside Obsidian. No reimplementation: runs the official dsh CLI and embeds it in a polished panel.",
+  "author": "Elervi",
+  "isDesktopOnly": true
+}
