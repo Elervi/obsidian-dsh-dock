@@ -289,6 +289,10 @@ export interface LaunchedServer {
  * vault 生效；sessions/profiles/storages 仍留在 per-vault dshHome，会话隔离
  * 不受影响。
  *
+ * patch 格式（cordis loader 的 applyEntryPatches）：列表里每个元素直接是
+ * `{ id, insert?, name?, ...overrides }`，overrides 键覆盖同名 target 条目，
+ * 没有 `update:` 包装层。
+ *
  * 幂等：每次启动都重写为同一份内容（原子写），profile 不存在时先建目录；
  * 共享根文件缺失（从未配过 shared）也没关系，dsh 按空配置启动。
  */
@@ -300,13 +304,12 @@ export function ensureSharedConfigPatch(dshHome: string, sharedRoot: string): vo
     const settingsPath = path.join(sharedRoot, 'settings.yaml')
     const credentialsPath = path.join(sharedRoot, '.credentials.yaml')
     const patch = `# dsh-dock 自动维护：per-vault 配置共享（模型/密钥/主题指向共享 ~/.dsh，会话仍隔离）
-- update:
-    - id: settings
-      config:
-        path: ${settingsPath}
-    - id: credentials
-      config:
-        path: ${credentialsPath}
+- id: settings
+  config:
+    path: ${settingsPath}
+- id: credentials
+  config:
+    path: ${credentialsPath}
 `
     fs.mkdirSync(profileDir, { recursive: true })
     fs.writeFileSync(patchFile, patch)
