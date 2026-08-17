@@ -22,6 +22,7 @@ import {
 } from './launcher'
 import { DshDockSettingsTab, DEFAULT_SETTINGS, type DshDockSettings } from './settings'
 import { DshWebView, DSH_WEB_VIEW_TYPE } from './view'
+import { currentVaultInfo, writeCurrentVaultMarker } from './currentVault'
 
 /**
  * 计算 DSH_HOME：
@@ -48,6 +49,8 @@ export default class DshDockPlugin extends Plugin {
   private starting = false
   private statusBarEl: HTMLElement | null = null
   private statusListeners = new Set<() => void>()
+  /** 标记文件写入防抖 timer（窗口 focus 可能高频触发） */
+  private markerTimer: ReturnType<typeof setTimeout> | null = null
 
   // ------------------------------------------------------------------ 生命周期
 
@@ -55,6 +58,17 @@ export default class DshDockPlugin extends Plugin {
     await this.loadSettings()
 
     this.registerView(DSH_WEB_VIEW_TYPE, (leaf) => new DshWebView(leaf, this))
+
+    // 把"当前焦点 vault"跨进程告诉 DSH 侧：本窗口打开（onload）与每次获得
+    // 焦点时刷新标记文件。多窗口场景下每个窗口都独立加载本插件，最后获得
+    // 焦点的窗口写入，即"用户当前正在看的 vault"。
+    this.refreshCurrentVaultMarker()
+    const onWindowFocus = () => this.refreshCurrentVaultMarker()
+    window.addEventListener('focus', onWindowFocus)
+    this.register(() => window.removeEventListener('focus', onWindowFocus))
+    // 补充信号：用户在窗口内切换文件/布局必然触发 active-leaf-change，
+    // 覆盖 window focus 事件不派发的场景。防抖共用一个 timer，互不干扰。
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshCurrentVaultMarker()))
 
     this.addRibbonIcon('bot', 'DSH Dock：打开面板', () => void this.openPanel())
     this.addCommand({
@@ -148,6 +162,18 @@ export default class DshDockPlugin extends Plugin {
     }
   }
 
+  // ------------------------------------------------------------------ 当前 vault 标记
+
+  /** 读取当前 vault 并写标记文件（防抖 300ms，避免 focus 高频触发反复写盘） */
+  refreshCurrentVaultMarker(): void {
+    if (this.markerTimer) clearTimeout(this.markerTimer)
+    this.markerTimer = setTimeout(() => {
+      this.markerTimer = null
+      const info = currentVaultInfo(this.app)
+      if (info) writeCurrentVaultMarker(info.name, info.path)
+    }, 300)
+  }
+
   // ------------------------------------------------------------------ 启动 / 停止
 
   /** 端口上已有服务 → 挂接；否则 spawn 官方 dsh web */
@@ -159,6 +185,7 @@ export default class DshDockPlugin extends Plugin {
     try {
       const vaultRoot = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.()
       const dshHome = computeDshHome(this.settings, vaultRoot)
+      const vaultInfo = currentVaultInfo(this.app)
       const result = await ensureDshRunning({
         dshBin: this.settings.dshBin,
         nodeBin: this.settings.nodeBin,
@@ -166,6 +193,14 @@ export default class DshDockPlugin extends Plugin {
         host: this.settings.host,
         dshHome,
         useEmbeddedNode: this.settings.useEmbeddedNode,
+        // 启动时把当前 vault 一并注入子进程 env，作为标记文件之外的第二通道
+        // （服务刚拉起、标记尚未刷新时兜底）。
+        env: vaultInfo
+          ? {
+              DSH_OBSIDIAN_VAULT_NAME: vaultInfo.name,
+              DSH_OBSIDIAN_VAULT_PATH: vaultInfo.path,
+            }
+          : {},
       })
       this.proc = result.proc ?? null
       if (result.status.kind === 'running' && result.proc) {

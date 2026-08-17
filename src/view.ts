@@ -81,6 +81,10 @@ export class DshWebView extends ItemView {
 
     // 兜底：打开面板时若服务未启动且端口可用，尝试拉起
     void this.ensureStarted()
+
+    // 打开面板时刷新一次当前 vault 标记：用户此刻正打开 DSH 面板的窗口
+    // 就是"当前 vault"，无需等 focus/active-leaf-change 事件。
+    this.plugin.refreshCurrentVaultMarker()
   }
 
   override onClose(): Promise<void> {
