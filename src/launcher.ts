@@ -278,42 +278,110 @@ export interface LaunchedServer {
 }
 
 /**
- * per-vault 模式下的"配置共享"：把 per-vault DSH_HOME 的模型/密钥/主题配置
- * 指回共享 `~/.dsh`，只隔离会话数据。
+ * per-vault 模式：把 per-vault DSH_HOME 的 `profiles/` 替换为指向共享
+ * `~/.dsh/profiles` 的软链。运行时插件（约 195 个 @deepseek-ai 包）全局
+ * 一份，避免每个 vault 各自铺几百 MB 的 node_modules 平面链接；skill 定义
+ * 也随共享 profiles/agent-presets 一并复用。
+ *
+ * 已存在的真实目录会被替换为软链（旧目录先改名备份为 `<profiles>.bak-<ts>`，
+ * 确认共享可用后可手动删除）。
+ */
+export function ensureSharedProfiles(dshHome: string, sharedRoot: string): void {
+  if (!sharedRoot || dshHome === sharedRoot) return
+  try {
+    const profilesPath = path.join(dshHome, 'profiles')
+    const sharedProfiles = path.join(sharedRoot, 'profiles')
+    if (!fs.existsSync(sharedProfiles)) {
+      console.warn(`[dsh-host] 共享 profiles 不存在（${sharedProfiles}），跳过软链共享`)
+      return
+    }
+    let st: fs.Stats | null = null
+    try {
+      st = fs.lstatSync(profilesPath)
+    } catch {
+      st = null
+    }
+    if (st?.isSymbolicLink()) {
+      if (fs.realpathSync(profilesPath) === fs.realpathSync(sharedProfiles)) return
+      fs.unlinkSync(profilesPath)
+      st = null
+    }
+    if (st?.isDirectory()) {
+      const bak = `${profilesPath}.bak-${Date.now()}`
+      fs.renameSync(profilesPath, bak)
+      console.info(`[dsh-host] per-vault profiles 已备份为 ${bak}，改用共享 profiles`)
+    }
+    fs.mkdirSync(dshHome, { recursive: true })
+    fs.symlinkSync(sharedProfiles, profilesPath, 'dir')
+    console.info(`[dsh-host] per-vault profiles -> ${sharedProfiles}（软链共享，插件全局一份）`)
+  } catch (err) {
+    console.warn('[dsh-host] 建立共享 profiles 软链失败（per-vault 将用独立 profiles）', err)
+  }
+}
+
+/**
+ * per-vault 模式下的"配置共享"：把模型/密钥/主题配置指回共享 `~/.dsh`，
+ * 只隔离会话数据。
  *
  * 原理：dsh 的 `settings`（@deepseek-ai/dsh-settings-file）与 `credentials`
  * （@deepseek-ai/dsh-credentials-local）插件都支持 `path` 覆盖，默认路径是
- * `<dshHome>/settings.yaml` / `<dshHome>/.credentials.yaml`。通过在 per-vault
- * profile 的 `cordis.patch.yml` 里把这两个插件指向共享根的文件，模型选择、
- * API 密钥、主题等配一次（在任意 vault 的 DSH 面板或直接改 ~/.dsh）即可全
- * vault 生效；sessions/profiles/storages 仍留在 per-vault dshHome，会话隔离
- * 不受影响。
+ * `<dshHome>/settings.yaml` / `<dshHome>/.credentials.yaml`。在共享 profile
+ * 的 `cordis.patch.yml` 里把这两个插件指向共享根的文件，模型选择、API 密钥、
+ * 主题等配一次（在任意 vault 的 DSH 面板或直接改 ~/.dsh）即可全 vault 生效。
+ * 注意：profiles 已软链共享，所以这里写入的正是共享 patch —— 用户自装的
+ * 插件条目（insert）必须保留，只合并/更新 settings/credentials 两个条目。
  *
  * patch 格式（cordis loader 的 applyEntryPatches）：列表里每个元素直接是
  * `{ id, insert?, name?, ...overrides }`，overrides 键覆盖同名 target 条目，
  * 没有 `update:` 包装层。
- *
- * 幂等：每次启动都重写为同一份内容（原子写），profile 不存在时先建目录；
- * 共享根文件缺失（从未配过 shared）也没关系，dsh 按空配置启动。
  */
 export function ensureSharedConfigPatch(dshHome: string, sharedRoot: string): void {
   if (!sharedRoot || dshHome === sharedRoot) return
   try {
-    const profileDir = path.join(dshHome, 'profiles', 'web')
-    const patchFile = path.join(profileDir, 'cordis.patch.yml')
+    const sharedProfiles = path.join(sharedRoot, 'profiles')
+    const patchFile = path.join(sharedProfiles, 'web', 'cordis.patch.yml')
     const settingsPath = path.join(sharedRoot, 'settings.yaml')
     const credentialsPath = path.join(sharedRoot, '.credentials.yaml')
-    const patch = `# dsh-dock 自动维护：per-vault 配置共享（模型/密钥/主题指向共享 ~/.dsh，会话仍隔离）
-- id: settings
+
+    const blockSettings = `- id: settings
   config:
     path: ${settingsPath}
-- id: credentials
+`
+    const blockCredentials = `- id: credentials
   config:
     path: ${credentialsPath}
 `
-    fs.mkdirSync(profileDir, { recursive: true })
-    fs.writeFileSync(patchFile, patch)
-    console.info(`[dsh-host] per-vault 配置共享: settings/credentials -> ${sharedRoot}`)
+
+    let content = ''
+    if (fs.existsSync(patchFile)) {
+      content = fs.readFileSync(patchFile, 'utf8')
+    }
+    const strip = (s: string) => s.replace(/\s+/g, '')
+    const hasSettings = strip(content).includes(strip(blockSettings))
+    const hasCredentials = strip(content).includes(strip(blockCredentials))
+    if (hasSettings && hasCredentials) return
+
+    // 只在共享 patch 为空数组 `[]`（允许注释，或文件不存在）时写入配置共享
+    // 条目；若用户已自定义 patch（如自装插件），不强行改写 —— 提示手动加。
+    const withoutComments = content
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('#'))
+      .join('\n')
+      .trim()
+    if (withoutComments === '' || withoutComments === '[]') {
+        const insertion = blockSettings + blockCredentials
+        content = `# dsh-dock 自动维护：per-vault 配置共享（模型/密钥/主题指向共享 ~/.dsh，会话仍隔离）
+${insertion.trimEnd()}
+`
+        fs.mkdirSync(path.dirname(patchFile), { recursive: true })
+        fs.writeFileSync(patchFile, content)
+        console.info(`[dsh-host] per-vault 配置共享: settings/credentials -> ${sharedRoot}`)
+      } else {
+        console.warn(
+          '[dsh-host] 共享 cordis.patch.yml 已有自定义内容，跳过自动写入；' +
+          '如需配置共享，请在 ~/.dsh/profiles/web/cordis.patch.yml 手动加入 settings/credentials 的 path 覆盖',
+        )
+      }
   } catch (err) {
     console.warn('[dsh-host] 写入配置共享 patch 失败（将按 per-vault 独立配置启动）', err)
   }
@@ -362,8 +430,10 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
   if (!node.nodeBin) {
     return { status: { kind: 'error', message: node.notes[node.notes.length - 1] ?? '无法定位 Node 运行时' } }
   }
-  // per-vault 配置共享：spawn 前把 settings/credentials 指回共享根（仅 per-vault 模式传入）。
+  // per-vault 共享：profiles（运行时插件）软链到共享根，settings/credentials
+  // 指回共享根 —— 配置与插件全局一份，仅会话隔离。
   if (opts.sharedConfigRoot) {
+    ensureSharedProfiles(opts.dshHome, opts.sharedConfigRoot)
     ensureSharedConfigPatch(opts.dshHome, opts.sharedConfigRoot)
   }
   const proc = launchDsh({ ...opts, dshBin: found.bin, nodeBin: node.nodeBin, useElectronAsNode: node.useElectronAsNode })

@@ -151,10 +151,10 @@ export class DshDockSettingsTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '数据目录（DSH_HOME）与会话隔离' })
     new Setting(containerEl)
       .setName('模式')
-      .setDesc('per-vault 模式 = 会话按库隔离（各库面板只显示本库创建的会话），但模型/密钥/主题配置共享一份，配一次全库生效。')
+      .setDesc('per-vault 模式 = 会话按库隔离（各库面板只显示本库创建的会话），但模型/密钥/主题配置与运行时插件全局共享一份，配一次全库生效。')
       .addDropdown((dd) => {
-        dd.addOption('shared', '官方共享 ~/.dsh（所有 vault 共用一套配置与会话）')
-        dd.addOption('per-vault', '每 vault 隔离会话 ~/.dsh/vaults/<名>-<hash>（配置仍共享）')
+        dd.addOption('shared', '官方共享 ~/.dsh（所有 vault 共用一套配置、插件与会话）')
+        dd.addOption('per-vault', '每 vault 隔离会话 ~/.dsh/vaults/<名>-<hash>（配置与插件仍共享）')
         dd.addOption('custom', '自定义路径')
         dd.setValue(this.plugin.settings.dshHomeMode)
         dd.onChange(async (v) => {
