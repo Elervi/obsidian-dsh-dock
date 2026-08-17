@@ -232,14 +232,9 @@ export default class DshDockPlugin extends Plugin {
         // per-vault 配置共享：模型/密钥/主题指回共享 ~/.dsh，只隔离会话。
         ...(sharedConfigRoot ? { sharedConfigRoot } : {}),
         useEmbeddedNode: this.settings.useEmbeddedNode,
-        // per-vault 模式：spawn cwd = vault 根 —— 新建会话的 cwd 即本库根，
-        // vault 工具解析顺序第 3 位（会话 cwd 若是库）直接命中，本库服务里
-        // 提问绝不解析成其他库。shared 模式不传（共用一个服务，靠焦点标记）。
-        ...(sharedConfigRoot && vaultRoot ? { cwd: vaultRoot } : {}),
-        // per-vault 模式：把本服务所属 vault 注入子进程 env（第二通道，标记
-        // 文件之外的兜底）。工具插件解析时优先用本 env，保证在生物备课的
-        // 服务里提问不会因焦点在生物题库而解析成生物题库。
-        // shared 模式：所有库共用一个服务，不注入 —— 工具仍跟随焦点窗口。
+        // per-vault 模式：注入本服务所属库 env（第二通道）。工具插件解析时
+        // 优先用本 env 识别"本服务服务的库"，cwd 保持 dsh 进程默认工作目录
+        // 不变 —— cwd 与 Obsidian 库是两个独立概念，不合并。
         env: sharedConfigRoot && vaultInfo
           ? {
               DSH_OBSIDIAN_VAULT_NAME: vaultInfo.name,
