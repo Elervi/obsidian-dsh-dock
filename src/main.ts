@@ -232,9 +232,11 @@ export default class DshDockPlugin extends Plugin {
         // per-vault 配置共享：模型/密钥/主题指回共享 ~/.dsh，只隔离会话。
         ...(sharedConfigRoot ? { sharedConfigRoot } : {}),
         useEmbeddedNode: this.settings.useEmbeddedNode,
-        // 启动时把当前 vault 一并注入子进程 env，作为标记文件之外的第二通道
-        // （服务刚拉起、标记尚未刷新时兜底）。
-        env: vaultInfo
+        // per-vault 模式：把本服务所属 vault 注入子进程 env（第二通道，标记
+        // 文件之外的兜底）。工具插件解析时优先用本 env，保证在生物备课的
+        // 服务里提问不会因焦点在生物题库而解析成生物题库。
+        // shared 模式：所有库共用一个服务，不注入 —— 工具仍跟随焦点窗口。
+        env: sharedConfigRoot && vaultInfo
           ? {
               DSH_OBSIDIAN_VAULT_NAME: vaultInfo.name,
               DSH_OBSIDIAN_VAULT_PATH: vaultInfo.path,
