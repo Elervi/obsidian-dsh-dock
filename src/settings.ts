@@ -151,10 +151,10 @@ export class DshDockSettingsTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: '数据目录（DSH_HOME）与会话隔离' })
     new Setting(containerEl)
       .setName('模式')
-      .setDesc('DSH 的会话/密钥/模型配置根目录。per-vault 模式 = 每个 vault 独立 DSH_HOME + 独立端口，各自只显示本 vault 创建/新建的会话，互不相通。')
+      .setDesc('per-vault 模式 = 会话按库隔离（各库面板只显示本库创建的会话），但模型/密钥/主题配置共享一份，配一次全库生效。')
       .addDropdown((dd) => {
-        dd.addOption('shared', '官方共享 ~/.dsh（所有 vault 共用一套会话，与 dsh CLI 一致）')
-        dd.addOption('per-vault', '每 vault 隔离 ~/.dsh/vaults/<名>-<hash>（会话完全独立）')
+        dd.addOption('shared', '官方共享 ~/.dsh（所有 vault 共用一套配置与会话）')
+        dd.addOption('per-vault', '每 vault 隔离会话 ~/.dsh/vaults/<名>-<hash>（配置仍共享）')
         dd.addOption('custom', '自定义路径')
         dd.setValue(this.plugin.settings.dshHomeMode)
         dd.onChange(async (v) => {
@@ -210,7 +210,12 @@ export class DshDockSettingsTab extends PluginSettingTab {
   }
 
   private describeDshHome(): string {
-    return `生效路径: ${this.plugin.effectiveDshHome()}`
+    const home = this.plugin.effectiveDshHome()
+    const shared = this.plugin.effectiveSharedConfigRoot()
+    if (shared) {
+      return `会话目录: ${home}\n配置共享: ${shared}（模型/密钥/主题配一次全库生效）`
+    }
+    return `生效路径: ${home}`
   }
 
   private describeNet(): string {

@@ -51,6 +51,12 @@ export interface LaunchOptions {
   host?: string
   /** $DSH_HOME（会话/密钥/模型配置根目录；默认 <vault>/.dsh） */
   dshHome: string
+  /**
+   * 共享配置根（per-vault 模式下的 `~/.dsh`）：模型/密钥/主题等配置类文件
+   * 指向此目录，所有 vault 共用一份；sessions 等数据仍在 `dshHome` 隔离。
+   * 留空 = 不启用配置共享（dshHome 自身即配置根）。
+   */
+  sharedConfigRoot?: string
   /** 是否允许用 ELECTRON_RUN_AS_NODE 复用 Obsidian 内置 Node（默认关闭：实测不可靠） */
   useEmbeddedNode?: boolean
   /** 就绪等待上限（默认 120s） */
@@ -271,6 +277,45 @@ export interface LaunchedServer {
   attached: boolean
 }
 
+/**
+ * per-vault 模式下的"配置共享"：把 per-vault DSH_HOME 的模型/密钥/主题配置
+ * 指回共享 `~/.dsh`，只隔离会话数据。
+ *
+ * 原理：dsh 的 `settings`（@deepseek-ai/dsh-settings-file）与 `credentials`
+ * （@deepseek-ai/dsh-credentials-local）插件都支持 `path` 覆盖，默认路径是
+ * `<dshHome>/settings.yaml` / `<dshHome>/.credentials.yaml`。通过在 per-vault
+ * profile 的 `cordis.patch.yml` 里把这两个插件指向共享根的文件，模型选择、
+ * API 密钥、主题等配一次（在任意 vault 的 DSH 面板或直接改 ~/.dsh）即可全
+ * vault 生效；sessions/profiles/storages 仍留在 per-vault dshHome，会话隔离
+ * 不受影响。
+ *
+ * 幂等：每次启动都重写为同一份内容（原子写），profile 不存在时先建目录；
+ * 共享根文件缺失（从未配过 shared）也没关系，dsh 按空配置启动。
+ */
+export function ensureSharedConfigPatch(dshHome: string, sharedRoot: string): void {
+  if (!sharedRoot || dshHome === sharedRoot) return
+  try {
+    const profileDir = path.join(dshHome, 'profiles', 'web')
+    const patchFile = path.join(profileDir, 'cordis.patch.yml')
+    const settingsPath = path.join(sharedRoot, 'settings.yaml')
+    const credentialsPath = path.join(sharedRoot, '.credentials.yaml')
+    const patch = `# dsh-dock 自动维护：per-vault 配置共享（模型/密钥/主题指向共享 ~/.dsh，会话仍隔离）
+- update:
+    - id: settings
+      config:
+        path: ${settingsPath}
+    - id: credentials
+      config:
+        path: ${credentialsPath}
+`
+    fs.mkdirSync(profileDir, { recursive: true })
+    fs.writeFileSync(patchFile, patch)
+    console.info(`[dsh-host] per-vault 配置共享: settings/credentials -> ${sharedRoot}`)
+  } catch (err) {
+    console.warn('[dsh-host] 写入配置共享 patch 失败（将按 per-vault 独立配置启动）', err)
+  }
+}
+
 /** 启动官方 dsh web。调用方负责监听 proc 的 exit/error。 */
 export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: string; useElectronAsNode: boolean }): ChildProcess {
   const port = opts.port ?? 3080
@@ -313,6 +358,10 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
   const node = resolveNodeBin(opts.nodeBin, embeddedNodeVersion(), opts.useEmbeddedNode)
   if (!node.nodeBin) {
     return { status: { kind: 'error', message: node.notes[node.notes.length - 1] ?? '无法定位 Node 运行时' } }
+  }
+  // per-vault 配置共享：spawn 前把 settings/credentials 指回共享根（仅 per-vault 模式传入）。
+  if (opts.sharedConfigRoot) {
+    ensureSharedConfigPatch(opts.dshHome, opts.sharedConfigRoot)
   }
   const proc = launchDsh({ ...opts, dshBin: found.bin, nodeBin: node.nodeBin, useElectronAsNode: node.useElectronAsNode })
 

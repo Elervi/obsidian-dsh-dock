@@ -57,6 +57,20 @@ export function computePort(s: Pick<DshDockSettings, 'dshHomeMode' | 'port'>, va
   return s.port
 }
 
+/**
+ * per-vault 模式下的共享配置根（模型/密钥/主题共用一份，只隔离会话）。
+ * - shared：dshHome 自身即配置根，无需共享层；
+ * - custom：用户指定路径即配置根，无需共享层；
+ * - per-vault：返回共享 `~/.dsh`，让每个 vault 的 settings/credentials
+ *   指回它 —— 配一次全 vault 生效。
+ */
+export function computeSharedConfigRoot(s: Pick<DshDockSettings, 'dshHomeMode'>, vaultRoot: string | undefined): string | undefined {
+  if (s.dshHomeMode === 'per-vault' && vaultRoot) {
+    return path.join(os.homedir(), '.dsh')
+  }
+  return undefined
+}
+
 export default class DshDockPlugin extends Plugin {
   settings: DshDockSettings = DEFAULT_SETTINGS
   private proc: ChildProcess | null = null
@@ -207,6 +221,7 @@ export default class DshDockPlugin extends Plugin {
       const vaultRoot = this.vaultRoot()
       const dshHome = computeDshHome(this.settings, vaultRoot)
       const port = computePort(this.settings, vaultRoot)
+      const sharedConfigRoot = computeSharedConfigRoot(this.settings, vaultRoot)
       const vaultInfo = currentVaultInfo(this.app)
       const result = await ensureDshRunning({
         dshBin: this.settings.dshBin,
@@ -214,6 +229,8 @@ export default class DshDockPlugin extends Plugin {
         port,
         host: this.settings.host,
         dshHome,
+        // per-vault 配置共享：模型/密钥/主题指回共享 ~/.dsh，只隔离会话。
+        ...(sharedConfigRoot ? { sharedConfigRoot } : {}),
         useEmbeddedNode: this.settings.useEmbeddedNode,
         // 启动时把当前 vault 一并注入子进程 env，作为标记文件之外的第二通道
         // （服务刚拉起、标记尚未刷新时兜底）。
@@ -292,6 +309,11 @@ export default class DshDockPlugin extends Plugin {
   /** 当前设置下生效的端口（per-vault 模式每 vault 独立） */
   effectivePort(): number {
     return computePort(this.settings, this.vaultRoot())
+  }
+
+  /** 当前设置下生效的共享配置根（per-vault 模式 = ~/.dsh，其余无） */
+  effectiveSharedConfigRoot(): string | undefined {
+    return computeSharedConfigRoot(this.settings, this.vaultRoot())
   }
 
   private async loadSettings(): Promise<void> {
