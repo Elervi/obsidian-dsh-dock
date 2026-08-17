@@ -42,6 +42,21 @@ export function computeDshHome(s: Pick<DshDockSettings, 'dshHomeMode' | 'dshHome
   return path.join(home, '.dsh')
 }
 
+/**
+ * 计算本 vault 的监听端口。
+ * - shared / custom：settings.port（默认 3080）—— 所有 vault 共用同一服务与会话；
+ * - per-vault：settings.port + (stableHash % 4096) —— 每个 vault 独占端口，各自
+ *   spawn 独立的 dsh 进程；配合独立的 DSH_HOME（会话存储根），不同 vault 的
+ *   会话完全隔离，互不可见。端口冲突概率 ~1/4096，可接受。
+ */
+export function computePort(s: Pick<DshDockSettings, 'dshHomeMode' | 'port'>, vaultRoot: string | undefined): number {
+  if (s.dshHomeMode === 'per-vault' && vaultRoot) {
+    const offset = parseInt(stableHash(vaultRoot), 36) % 4096
+    return s.port + offset
+  }
+  return s.port
+}
+
 export default class DshDockPlugin extends Plugin {
   settings: DshDockSettings = DEFAULT_SETTINGS
   private proc: ChildProcess | null = null
@@ -119,8 +134,14 @@ export default class DshDockPlugin extends Plugin {
   }
 
   get baseUrl(): string {
-    const port = this.settings.port
+    const vaultRoot = this.vaultRoot()
+    const port = computePort(this.settings, vaultRoot)
     return `http://${this.settings.host}:${port}/`
+  }
+
+  /** 当前 vault 根目录（无则 undefined） */
+  private vaultRoot(): string | undefined {
+    return (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.()
   }
 
   onStatusChange(fn: () => void): () => void {
@@ -183,16 +204,20 @@ export default class DshDockPlugin extends Plugin {
     this.starting = true
     this.setStatus({ kind: 'starting' })
     try {
-      const vaultRoot = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.()
+      const vaultRoot = this.vaultRoot()
       const dshHome = computeDshHome(this.settings, vaultRoot)
+      const port = computePort(this.settings, vaultRoot)
       const vaultInfo = currentVaultInfo(this.app)
       const result = await ensureDshRunning({
         dshBin: this.settings.dshBin,
         nodeBin: this.settings.nodeBin,
-        port: this.settings.port,
+        port,
         host: this.settings.host,
         dshHome,
         useEmbeddedNode: this.settings.useEmbeddedNode,
+        // 子进程工作目录 = vault 根：新建会话的 cwd 即该 vault，会话持久化
+        // 按 vault 分目录，重启/恢复后仍关联（vault 工具解析顺序自动命中）。
+        cwd: vaultRoot,
         // 启动时把当前 vault 一并注入子进程 env，作为标记文件之外的第二通道
         // （服务刚拉起、标记尚未刷新时兜底）。
         env: vaultInfo
@@ -264,8 +289,12 @@ export default class DshDockPlugin extends Plugin {
 
   /** 当前设置下生效的 DSH_HOME（设置页展示） */
   effectiveDshHome(): string {
-    const vaultRoot = (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.()
-    return computeDshHome(this.settings, vaultRoot)
+    return computeDshHome(this.settings, this.vaultRoot())
+  }
+
+  /** 当前设置下生效的端口（per-vault 模式每 vault 独立） */
+  effectivePort(): number {
+    return computePort(this.settings, this.vaultRoot())
   }
 
   private async loadSettings(): Promise<void> {

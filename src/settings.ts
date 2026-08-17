@@ -132,8 +132,8 @@ export class DshDockSettingsTab extends PluginSettingTab {
     // ---------- 网络 ----------
     containerEl.createEl('h3', { text: '网络' })
     new Setting(containerEl)
-      .setName('监听端口')
-      .setDesc('官方默认 3080。填 0 让系统分配空闲端口。')
+      .setName('监听端口（基准）')
+      .setDesc('官方默认 3080。shared/custom 模式直接使用；per-vault 模式在此基础上按 vault 派生独立端口（每 vault 独占，会话互不可见）。')
       .addText((t) =>
         t
           .setPlaceholder('3080')
@@ -142,17 +142,19 @@ export class DshDockSettingsTab extends PluginSettingTab {
             const n = Number(v.trim())
             this.plugin.settings.port = Number.isInteger(n) && n >= 0 && n <= 65535 ? n : 3080
             await this.plugin.saveSettings()
+            this.netPreview.textContent = this.describeNet()
           }),
       )
+    this.netPreview = containerEl.createEl('div', { cls: 'dsh-dock-detect' })
 
     // ---------- 数据目录 ----------
-    containerEl.createEl('h3', { text: '数据目录（DSH_HOME）' })
+    containerEl.createEl('h3', { text: '数据目录（DSH_HOME）与会话隔离' })
     new Setting(containerEl)
       .setName('模式')
-      .setDesc('DSH 的会话/密钥/模型配置根目录。')
+      .setDesc('DSH 的会话/密钥/模型配置根目录。per-vault 模式 = 每个 vault 独立 DSH_HOME + 独立端口，各自只显示本 vault 创建/新建的会话，互不相通。')
       .addDropdown((dd) => {
-        dd.addOption('shared', '官方共享 ~/.dsh（与 dsh CLI 一致，复用现有配置）')
-        dd.addOption('per-vault', '每 vault 隔离 ~/.dsh/vaults/<名>-<hash>')
+        dd.addOption('shared', '官方共享 ~/.dsh（所有 vault 共用一套会话，与 dsh CLI 一致）')
+        dd.addOption('per-vault', '每 vault 隔离 ~/.dsh/vaults/<名>-<hash>（会话完全独立）')
         dd.addOption('custom', '自定义路径')
         dd.setValue(this.plugin.settings.dshHomeMode)
         dd.onChange(async (v) => {
@@ -160,6 +162,7 @@ export class DshDockSettingsTab extends PluginSettingTab {
           await this.plugin.saveSettings()
           this.customHomeEl?.setDisabled(v !== 'custom')
           this.homePreview.textContent = this.describeDshHome()
+          this.netPreview.textContent = this.describeNet()
         })
       })
 
@@ -181,10 +184,12 @@ export class DshDockSettingsTab extends PluginSettingTab {
 
     this.detectLine.textContent = this.describeDetect()
     this.homePreview.textContent = this.describeDshHome()
+    this.netPreview.textContent = this.describeNet()
   }
 
   private detectLine!: HTMLElement
   private homePreview!: HTMLElement
+  private netPreview!: HTMLElement
 
   private describeStatus(): string {
     const s = this.plugin.getStatus()
@@ -206,5 +211,12 @@ export class DshDockSettingsTab extends PluginSettingTab {
 
   private describeDshHome(): string {
     return `生效路径: ${this.plugin.effectiveDshHome()}`
+  }
+
+  private describeNet(): string {
+    const port = this.plugin.effectivePort()
+    const mode = this.plugin.settings.dshHomeMode
+    const suffix = mode === 'per-vault' ? '（本 vault 独占，与其他 vault 隔离）' : '（shared/custom：所有 vault 共用）'
+    return `生效端口: ${port}${suffix}`
   }
 }
