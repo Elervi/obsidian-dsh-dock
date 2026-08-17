@@ -63,6 +63,13 @@ export interface LaunchOptions {
   timeoutMs?: number
   /** 附加环境变量 */
   env?: NodeJS.ProcessEnv
+  /**
+   * 子进程工作目录。per-vault 模式传 vault 根：新建会话的 cwd 即本库根，
+   * vault 工具解析顺序第 3 位（会话 cwd 若是库）直接命中 —— 在生物备课的
+   * 服务里提问绝不会解析成生物题库。shared 模式不传（所有库共用一个服务，
+   * 靠焦点标记跟随）。
+   */
+  cwd?: string
 }
 
 export interface ResolvedNode {
@@ -405,9 +412,10 @@ export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: strin
   }
   if (opts.useElectronAsNode) env.ELECTRON_RUN_AS_NODE = '1'
   console.info(`[dsh-host] spawn ${opts.nodeBin} ${args.join(' ')}`)
-  console.info(`[dsh-host] DSH_HOME=${opts.dshHome}`)
+  console.info(`[dsh-host] DSH_HOME=${opts.dshHome}${opts.cwd ? ` cwd=${opts.cwd}` : ''}`)
   return spawn(opts.nodeBin, args, {
     env,
+    cwd: opts.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
