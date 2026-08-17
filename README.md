@@ -69,6 +69,57 @@ Obsidian (Electron)
   可选「自定义路径」；
 - **随 Obsidian 自动启动**：默认开。
 
+## per-vault 隔离模式（V0.2 核心特性）
+
+per-vault 模式（`dshHomeMode: per-vault`，DSH_HOME = `~/.dsh/vaults/<库名>-<hash6>`）
+的隔离边界是 **「会话隔离，配置共享」**：
+
+| 维度 | 按库隔离 | 机制 |
+|---|---|---|
+| 会话 / 历史（sessions、storages） | ✅ | 每库独占 DSH_HOME 目录 |
+| 监听端口 | ✅ | `settings.port + (vaultRoot hash % 4096)`，冲突概率 ~1/4096 |
+| 会话 cwd | ✅ | spawn `cwd = vaultRoot`，会话 cwd 即本库根，杜绝跨库串扰 |
+| vault 识别 | ✅ | 仅 per-vault 注入 `DSH_OBSIDIAN_VAULT_PATH` env，cwd 与库识别解耦 |
+| 运行时插件（profiles） | ❌ 共享 | `profiles/` 软链 → `~/.dsh/profiles`，195+ 插件全局一份 |
+| agent presets | ❌ 共享 | `.agent-presets/` 软链 → `~/.dsh/.agent-presets` |
+| 模型 / API 密钥 / 界面主题 | ❌ 共享 | `cordis.patch.yml` 把 settings/credentials 指回 `~/.dsh` |
+
+### 配置共享原理
+
+插件自动维护共享 profile 的 `cordis.patch.yml`，把两个插件用 `path` 覆盖指回共享根
+（写入条件：patch 为空或 `[]`；已有自定义内容时跳过，需手动合并）：
+
+```yaml
+- id: settings
+  config:
+    path: ~/.dsh/settings.yaml
+- id: credentials
+  config:
+    path: ~/.dsh/.credentials.yaml
+```
+
+效果：**模型选择、API 密钥、DSH 面板主题配一次全库生效**，只有会话数据按库隔离。
+
+### 常见疑问（FAQ）
+
+**为什么改一个库的 DSH 面板主题，所有库都跟着变？**
+
+主题偏好 `ui-theme.preference` 存在共享的 `~/.dsh/settings.yaml`，所有 per-vault / shared
+实例的面板都读写这一份文件。Obsidian 自己的外观（`.obsidian/appearance.json`）不在此列，
+仍是每库独立。
+
+**如何让 DSH 面板主题按库独立？**
+
+编辑 `~/.dsh/profiles/web/cordis.patch.yml`，**删除 `settings` 条目、保留 `credentials`**：
+各 per-vault 服务改用各自的 `<per-vault-home>/settings.yaml` 存主题。
+副作用：模型选择等其它设置也变为按库独立，每个库需各配一次。
+
+### 更新记录
+
+| 日期 | 重要更新 |
+|---|---|
+| 2026-08-17 | per-vault 配置共享（模型/密钥/主题配一次全库生效）；`cordis.patch.yml` 语法修正；profiles / .agent-presets 软链共享；`DSH_OBSIDIAN_VAULT_PATH` env 注入；spawn `cwd = vaultRoot` 消除跨库串扰 |
+
 ## 与生物题库工具联动
 
 `dsh-tool-obsidian-vault`（官方 dsh-tools 风格的工具插件）负责在 DSH 内部操作 Obsidian vault
