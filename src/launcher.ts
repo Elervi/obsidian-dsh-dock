@@ -57,13 +57,6 @@ export interface LaunchOptions {
   timeoutMs?: number
   /** 附加环境变量 */
   env?: NodeJS.ProcessEnv
-  /**
-   * 子进程工作目录。传 vault 根目录时，新建会话的 cwd 就是该 vault：
-   * 会话持久化自动按 vault 分目录（<root>/<vault 路径>/<会话>/…），
-   * 重启/恢复后 SessionHeader.cwd 仍是 vault 根，vault 工具解析顺序第 3 位
-   * （会话 cwd 若是库）天然命中 —— 即"vault ↔ 会话"的持久关联。
-   */
-  cwd?: string
 }
 
 export interface ResolvedNode {
@@ -246,10 +239,9 @@ export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: strin
   }
   if (opts.useElectronAsNode) env.ELECTRON_RUN_AS_NODE = '1'
   console.info(`[dsh-host] spawn ${opts.nodeBin} ${args.join(' ')}`)
-  console.info(`[dsh-host] DSH_HOME=${opts.dshHome}${opts.cwd ? ` cwd=${opts.cwd}` : ''}`)
+  console.info(`[dsh-host] DSH_HOME=${opts.dshHome}`)
   return spawn(opts.nodeBin, args, {
     env,
-    cwd: opts.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })

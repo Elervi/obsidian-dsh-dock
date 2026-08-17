@@ -215,9 +215,6 @@ export default class DshDockPlugin extends Plugin {
         host: this.settings.host,
         dshHome,
         useEmbeddedNode: this.settings.useEmbeddedNode,
-        // 子进程工作目录 = vault 根：新建会话的 cwd 即该 vault，会话持久化
-        // 按 vault 分目录，重启/恢复后仍关联（vault 工具解析顺序自动命中）。
-        cwd: vaultRoot,
         // 启动时把当前 vault 一并注入子进程 env，作为标记文件之外的第二通道
         // （服务刚拉起、标记尚未刷新时兜底）。
         env: vaultInfo
