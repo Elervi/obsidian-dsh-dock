@@ -283,40 +283,47 @@ export interface LaunchedServer {
  * 一份，避免每个 vault 各自铺几百 MB 的 node_modules 平面链接；skill 定义
  * 也随共享 profiles/agent-presets 一并复用。
  *
- * 已存在的真实目录会被替换为软链（旧目录先改名备份为 `<profiles>.bak-<ts>`，
+ * 同时把 `.agent-presets/` 软链到共享 `~/.dsh/.agent-presets`：agent preset
+ * 的发现根是 `dshHomePath('.agent-presets')`（跟随 DSH_HOME），per-vault
+ * 模式若不同步软链，dsh 会从 per-vault 目录找 preset —— 用户自定义的
+ * `obsidian` preset（挂载 vault 工具 + obsidian-conventions skill）就找不到，
+ * 表现为面板里没有 vault 工具。
+ *
+ * 已存在的真实目录会被替换为软链（旧目录先改名备份为 `<name>.bak-<ts>`，
  * 确认共享可用后可手动删除）。
  */
 export function ensureSharedProfiles(dshHome: string, sharedRoot: string): void {
   if (!sharedRoot || dshHome === sharedRoot) return
-  try {
-    const profilesPath = path.join(dshHome, 'profiles')
-    const sharedProfiles = path.join(sharedRoot, 'profiles')
-    if (!fs.existsSync(sharedProfiles)) {
-      console.warn(`[dsh-host] 共享 profiles 不存在（${sharedProfiles}），跳过软链共享`)
-      return
-    }
-    let st: fs.Stats | null = null
+  const linkDir = (name: string): void => {
     try {
-      st = fs.lstatSync(profilesPath)
-    } catch {
-      st = null
+      const target = path.join(dshHome, name)
+      const sharedTarget = path.join(sharedRoot, name)
+      if (!fs.existsSync(sharedTarget)) return
+      let st: fs.Stats | null = null
+      try {
+        st = fs.lstatSync(target)
+      } catch {
+        st = null
+      }
+      if (st?.isSymbolicLink()) {
+        if (fs.realpathSync(target) === fs.realpathSync(sharedTarget)) return
+        fs.unlinkSync(target)
+        st = null
+      }
+      if (st?.isDirectory()) {
+        const bak = `${target}.bak-${Date.now()}`
+        fs.renameSync(target, bak)
+        console.info(`[dsh-host] per-vault ${name} 已备份为 ${bak}，改用共享`)
+      }
+      fs.mkdirSync(dshHome, { recursive: true })
+      fs.symlinkSync(sharedTarget, target, 'dir')
+      console.info(`[dsh-host] per-vault ${name} -> ${sharedTarget}（软链共享）`)
+    } catch (err) {
+      console.warn(`[dsh-host] 建立共享 ${name} 软链失败（per-vault 将用独立目录）`, err)
     }
-    if (st?.isSymbolicLink()) {
-      if (fs.realpathSync(profilesPath) === fs.realpathSync(sharedProfiles)) return
-      fs.unlinkSync(profilesPath)
-      st = null
-    }
-    if (st?.isDirectory()) {
-      const bak = `${profilesPath}.bak-${Date.now()}`
-      fs.renameSync(profilesPath, bak)
-      console.info(`[dsh-host] per-vault profiles 已备份为 ${bak}，改用共享 profiles`)
-    }
-    fs.mkdirSync(dshHome, { recursive: true })
-    fs.symlinkSync(sharedProfiles, profilesPath, 'dir')
-    console.info(`[dsh-host] per-vault profiles -> ${sharedProfiles}（软链共享，插件全局一份）`)
-  } catch (err) {
-    console.warn('[dsh-host] 建立共享 profiles 软链失败（per-vault 将用独立 profiles）', err)
   }
+  linkDir('profiles')
+  linkDir('.agent-presets')
 }
 
 /**
