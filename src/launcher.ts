@@ -149,8 +149,45 @@ export function resolveDshBin(explicit?: string): { bin: string | null; notes: s
 }
 
 /**
+ * 常见 Node 可执行文件绝对路径（按平台，探测用）。
+ * Obsidian 作为 GUI 应用从 Finder 启动时，PATH 通常只有系统目录
+ * （/usr/bin:/bin:/usr/sbin:/sbin），不含 Homebrew 等用户安装目录，
+ * 因此 spawn('node') 会直接 ENOENT。这里把常见安装位置补齐：
+ * - PATH 中的 node（shell 里运行时存在）；
+ * - macOS: /opt/homebrew/bin/node（Apple Silicon）、/usr/local/bin/node（Intel）；
+ * - Linux: /usr/bin/node、/usr/local/bin/node、~/.local/bin/node；
+ * - Windows: 通过 `where node` 解析。
+ */
+export function commonNodeBins(): string[] {
+  const bins: string[] = []
+  const pathEnv = process.env.PATH ?? ''
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (dir.trim()) bins.push(path.join(dir, 'node'))
+  }
+  if (process.platform === 'darwin') {
+    bins.push('/opt/homebrew/bin/node', '/usr/local/bin/node')
+  } else if (process.platform === 'linux') {
+    bins.push('/usr/bin/node', '/usr/local/bin/node', path.join(os.homedir(), '.local', 'bin', 'node'))
+  } else if (process.platform === 'win32') {
+    try {
+      const where = spawnSync('where', ['node'], { encoding: 'utf8', timeout: 10_000, windowsHide: true })
+      if (where.status === 0 && where.stdout) {
+        for (const line of where.stdout.trim().split(/\r?\n/)) {
+          if (line.trim()) bins.push(line.trim())
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  // 去重保序，保留第一个存在的
+  return [...new Set(bins)]
+}
+
+/**
  * 选择 Node 运行时。
- * 默认顺序：显式路径 → 系统 `node`（PATH，最稳定）。
+ * 默认顺序：显式路径 → 系统 `node`（PATH + 常见安装路径，返回绝对路径，
+ * 避免 Obsidian GUI 环境 PATH 缺失导致 spawn ENOENT）→ 找不到时给出明确错误。
  * ELECTRON_RUN_AS_NODE 复用 Obsidian 内置 Node 实测会挂起（Obsidian 二进制
  * 不按普通 Electron 语义响应），因此仅当 useEmbeddedNode 显式开启时才尝试。
  */
@@ -169,8 +206,14 @@ export function resolveNodeBin(explicit?: string, embeddedNodeVersion?: string, 
     }
     notes.push(`Obsidian 内置 Node ${embeddedNodeVersion} < ${NODE_SQLITE_MIN_MAJOR}，无法启用`)
   }
-  notes.push('使用 PATH 中的 node（系统 Node，最稳定）')
-  return { nodeBin: 'node', useElectronAsNode: false, nodeMajor: 0, notes }
+  for (const candidate of commonNodeBins()) {
+    if (fs.existsSync(candidate)) {
+      notes.push(`使用系统 Node: ${candidate}`)
+      return { nodeBin: candidate, useElectronAsNode: false, nodeMajor: 0, notes }
+    }
+  }
+  notes.push('未找到 Node。请安装 Node（https://nodejs.org），或在设置中填写 Node 可执行文件路径')
+  return { nodeBin: '', useElectronAsNode: false, nodeMajor: 0, notes }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +311,9 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
     return { status: { kind: 'error', message: found.notes[found.notes.length - 1] ?? '无法定位 dsh CLI' } }
   }
   const node = resolveNodeBin(opts.nodeBin, embeddedNodeVersion(), opts.useEmbeddedNode)
+  if (!node.nodeBin) {
+    return { status: { kind: 'error', message: node.notes[node.notes.length - 1] ?? '无法定位 Node 运行时' } }
+  }
   const proc = launchDsh({ ...opts, dshBin: found.bin, nodeBin: node.nodeBin, useElectronAsNode: node.useElectronAsNode })
 
   // 收集 stderr 尾部：子进程秒退时给出真实原因（如 EADDRINUSE）
