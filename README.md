@@ -120,7 +120,7 @@ per-vault 模式（`dshHomeMode: per-vault`，DSH_HOME = `~/.dsh/vaults/<库名>
 |---|---|
 | 2026-08-17 | per-vault 配置共享（模型/密钥/主题配一次全库生效）；`cordis.patch.yml` 语法修正；profiles / .agent-presets 软链共享；`DSH_OBSIDIAN_VAULT_PATH` env 注入；spawn `cwd = vaultRoot` 消除跨库串扰 |
 
-## 与生物题库工具联动
+## 与 dsh-tool-obsidian-vault 联动
 
 `dsh-tool-obsidian-vault`（官方 dsh-tools 风格的工具插件）负责在 DSH 内部操作 Obsidian vault
 （通过 `obsidian.json` 全局注册表发现 vault）。它跑在 **DSH 侧**（不是 Obsidian 侧）：
