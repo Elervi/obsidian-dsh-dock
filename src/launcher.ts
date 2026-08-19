@@ -269,7 +269,7 @@ export async function waitForReady(host: string, port: number, timeoutMs = 120_0
   for (;;) {
     if (await isPortUp(host, port, 1500)) return true
     if (Date.now() > deadline) return false
-    await new Promise((r) => setTimeout(r, 500))
+    await new Promise((r) => globalThis.setTimeout(r, 500))
   }
 }
 
@@ -320,11 +320,9 @@ export function ensureSharedProfiles(dshHome: string, sharedRoot: string): void 
       if (st?.isDirectory()) {
         const bak = `${target}.bak-${Date.now()}`
         fs.renameSync(target, bak)
-        console.info(`[dsh-host] per-vault ${name} 已备份为 ${bak}，改用共享`)
       }
       fs.mkdirSync(dshHome, { recursive: true })
       fs.symlinkSync(sharedTarget, target, 'dir')
-      console.info(`[dsh-host] per-vault ${name} -> ${sharedTarget}（软链共享）`)
     } catch (err) {
       console.warn(`[dsh-host] 建立共享 ${name} 软链失败（per-vault 将用独立目录）`, err)
     }
@@ -389,7 +387,6 @@ ${insertion.trimEnd()}
 `
         fs.mkdirSync(path.dirname(patchFile), { recursive: true })
         fs.writeFileSync(patchFile, content)
-        console.info(`[dsh-host] per-vault 配置共享: settings/credentials -> ${sharedRoot}`)
       } else {
         console.warn(
           '[dsh-host] 共享 cordis.patch.yml 已有自定义内容，跳过自动写入；' +
@@ -411,8 +408,6 @@ export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: strin
     DSH_HOME: opts.dshHome,
   }
   if (opts.useElectronAsNode) env.ELECTRON_RUN_AS_NODE = '1'
-  console.info(`[dsh-host] spawn ${opts.nodeBin} ${args.join(' ')}`)
-  console.info(`[dsh-host] DSH_HOME=${opts.dshHome}${opts.cwd ? ` cwd=${opts.cwd}` : ''}`)
   return spawn(opts.nodeBin, args, {
     env,
     cwd: opts.cwd,
@@ -499,7 +494,7 @@ function summarizeChildError(stderrTail: string): string {
 export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5000): Promise<void> {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve()
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    const timer = globalThis.setTimeout(() => {
       try {
         proc.kill('SIGKILL')
       } catch {
@@ -507,13 +502,13 @@ export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5
       }
     }, timeoutMs)
     proc.once('exit', () => {
-      clearTimeout(timer)
+      globalThis.clearTimeout(timer)
       resolve()
     })
     try {
       proc.kill('SIGTERM')
     } catch {
-      clearTimeout(timer)
+      globalThis.clearTimeout(timer)
       resolve()
     }
   })

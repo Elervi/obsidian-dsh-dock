@@ -7,6 +7,7 @@
  */
 
 import { Plugin, Notice, WorkspaceLeaf } from 'obsidian'
+import { shell } from 'electron'
 import type { ChildProcess } from 'child_process'
 import * as os from 'os'
 import * as path from 'path'
@@ -79,7 +80,7 @@ export default class DshDockPlugin extends Plugin {
   private statusBarEl: HTMLElement | null = null
   private statusListeners = new Set<() => void>()
   /** 标记文件写入防抖 timer（窗口 focus 可能高频触发） */
-  private markerTimer: ReturnType<typeof setTimeout> | null = null
+  private markerTimer: number | null = null
 
   // ------------------------------------------------------------------ 生命周期
 
@@ -132,8 +133,8 @@ export default class DshDockPlugin extends Plugin {
     }
   }
 
-  override async onunload(): Promise<void> {
-    await this.stop()
+  override onunload(): void {
+    void this.stop()
     this.statusListeners.clear()
   }
 
@@ -201,8 +202,8 @@ export default class DshDockPlugin extends Plugin {
 
   /** 读取当前 vault 并写标记文件（防抖 300ms，避免 focus 高频触发反复写盘） */
   refreshCurrentVaultMarker(): void {
-    if (this.markerTimer) clearTimeout(this.markerTimer)
-    this.markerTimer = setTimeout(() => {
+    if (this.markerTimer) window.clearTimeout(this.markerTimer)
+    this.markerTimer = window.setTimeout(() => {
       this.markerTimer = null
       const info = currentVaultInfo(this.app)
       if (info) writeCurrentVaultMarker(info.name, info.path)
@@ -272,7 +273,6 @@ export default class DshDockPlugin extends Plugin {
   }
 
   private hookChildLogs(proc: ChildProcess): void {
-    proc.stdout?.on('data', (d: Buffer) => console.info('[dsh]', d.toString().trimEnd()))
     proc.stderr?.on('data', (d: Buffer) => console.warn('[dsh]', d.toString().trimEnd()))
     proc.once('exit', (code, signal) => {
       if (this.proc === proc) {
@@ -318,10 +318,10 @@ export default class DshDockPlugin extends Plugin {
   }
 
   private async loadSettings(): Promise<void> {
-    const data = await this.loadData()
+    const data = (await this.loadData()) as Partial<DshDockSettings> | null
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {})
     // 旧版（dsh-host V0.1）设置迁移：dshHome 字符串 → custom 模式
-    const legacy = data as { dshHome?: string } | undefined
+    const legacy: { dshHome?: string } | null = data
     if (legacy?.dshHome && typeof legacy.dshHome === 'string' && legacy.dshHome.trim()) {
       this.settings.dshHomeMode = 'custom'
       this.settings.dshHome = legacy.dshHome.trim()
@@ -347,7 +347,6 @@ export default class DshDockPlugin extends Plugin {
   }
 
   async openInBrowser(): Promise<void> {
-    const { shell } = require('electron') as { shell: { openExternal(url: string): Promise<void> } }
     await shell.openExternal(this.baseUrl)
   }
 

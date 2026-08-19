@@ -53,14 +53,14 @@ export class DshDockSettingsTab extends PluginSettingTab {
     containerEl.empty()
 
     // ---------- 概览 ----------
-    containerEl.createEl('h2', { text: '⛵ DSH Dock' })
+    new Setting(containerEl).setName('⛵ DSH Dock').setHeading()
     containerEl.createEl('p', {
       cls: 'dsh-dock-settings-desc',
       text: '把官方 DeepSeek Harness Web 停靠进 Obsidian：定位 dsh → 子进程运行 → 面板嵌入。官方原生，官方 UI 原样嵌入。',
     })
 
     // ---------- 服务控制 ----------
-    containerEl.createEl('h3', { text: '服务' })
+    new Setting(containerEl).setName('服务').setHeading()
     const statusLine = new Setting(containerEl)
       .setName('服务状态')
       .setDesc(this.describeStatus())
@@ -88,7 +88,7 @@ export class DshDockSettingsTab extends PluginSettingTab {
       )
 
     // ---------- 运行时 ----------
-    containerEl.createEl('h3', { text: '运行时' })
+    new Setting(containerEl).setName('运行时').setHeading()
     new Setting(containerEl)
       .setName('dsh CLI 路径')
       .setDesc('留空自动探测（DSH_BIN → npm root -g → 常见全局目录）。可填 dsh 包目录或 bin.js 绝对路径。')
@@ -102,7 +102,7 @@ export class DshDockSettingsTab extends PluginSettingTab {
             this.detectLine.textContent = this.describeDetect()
           }),
       )
-    this.detectLine = containerEl.createEl('div', { cls: 'dsh-dock-detect' })
+    this.detectLine = containerEl.createDiv({ cls: 'dsh-dock-detect' })
 
     new Setting(containerEl)
       .setName('Node 可执行文件')
@@ -130,7 +130,7 @@ export class DshDockSettingsTab extends PluginSettingTab {
       )
 
     // ---------- 网络 ----------
-    containerEl.createEl('h3', { text: '网络' })
+    new Setting(containerEl).setName('网络').setHeading()
     new Setting(containerEl)
       .setName('监听端口（基准）')
       .setDesc('官方默认 3080。shared/custom 模式直接使用；per-vault 模式在此基础上按 vault 派生独立端口（每 vault 独占，会话互不可见）。')
@@ -145,10 +145,10 @@ export class DshDockSettingsTab extends PluginSettingTab {
             this.netPreview.textContent = this.describeNet()
           }),
       )
-    this.netPreview = containerEl.createEl('div', { cls: 'dsh-dock-detect' })
+    this.netPreview = containerEl.createDiv({ cls: 'dsh-dock-detect' })
 
     // ---------- 数据目录 ----------
-    containerEl.createEl('h3', { text: '数据目录（DSH_HOME）与会话隔离' })
+    new Setting(containerEl).setName('数据目录（DSH_HOME）与会话隔离').setHeading()
     new Setting(containerEl)
       .setName('模式')
       .setDesc('per-vault 模式 = 会话按库隔离（各库面板只显示本库创建的会话），但模型/密钥/主题配置与运行时插件全局共享一份，配一次全库生效。')
@@ -180,7 +180,7 @@ export class DshDockSettingsTab extends PluginSettingTab {
       )
     this.customHomeEl.setDisabled(this.plugin.settings.dshHomeMode !== 'custom')
 
-    this.homePreview = containerEl.createEl('div', { cls: 'dsh-dock-detect' })
+    this.homePreview = containerEl.createDiv({ cls: 'dsh-dock-detect' })
 
     this.detectLine.textContent = this.describeDetect()
     this.homePreview.textContent = this.describeDshHome()
