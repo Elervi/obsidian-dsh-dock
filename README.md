@@ -17,7 +17,7 @@
 > 系统有 `node`（≥ 20 即可，会话全文搜索才需 ≥ 22.5）。
 
 1. 把仓库根目录的 `main.js` + `manifest.json` + `styles.css` 复制到 vault 的
-   `.obsidian/plugins/obsidian-dsh-dock/`；
+   `.obsidian/plugins/dsh-dock/`；
 2. Obsidian：设置 → 第三方插件 → 启用 **DSH Dock**；
 3. 点击侧边栏机器人图标，或运行命令「打开 DSH 面板」。
 
