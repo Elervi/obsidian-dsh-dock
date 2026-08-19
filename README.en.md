@@ -6,11 +6,7 @@
 
 > Dock the official **DeepSeek Harness Web** (127.0.0.1:3080) into an Obsidian sidebar: spawn the official `dsh` CLI and embed the official UI as-is. Thin shell, no reimplementation.
 
-<div align="center">
-
 [![🇨🇳 中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-%E4%B8%AD%E6%96%87%E7%89%88-7C3AED?style=flat-square)](README.md) [![🇬🇧 English](https://img.shields.io/badge/English-Current-0969DA?style=flat-square)](#)
-
-</div>
 
 ## ✨ Features
 

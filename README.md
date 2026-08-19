@@ -6,11 +6,7 @@
 
 > 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏——跑官方 `dsh CLI`、官方 UI 原样嵌入，只做外壳。
 
-<div align="center">
-
 [![🇨🇳 中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-%E5%BD%93%E5%89%8D%E9%A1%B5-7C3AED?style=flat-square)](#) [![🇬🇧 English](https://img.shields.io/badge/English-%E8%8B%B1%E6%96%87%E7%89%88-0969DA?style=flat-square)](README.en.md)
-
-</div>
 
 ## ✨ 特性
 
