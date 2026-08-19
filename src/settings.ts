@@ -1,6 +1,6 @@
 /**
  * 设置：字段 + 设置页 UI。
- * V0.2：DSH_HOME 三档模式（官方共享 / 每 vault 隔离 / 自定义）。
+ * V0.2：DSH_HOME 三档模式（每 vault 隔离 / 官方共享 / 自定义），默认 per-vault。
  */
 
 import { App, PluginSettingTab, Setting } from 'obsidian'
@@ -17,7 +17,7 @@ export interface DshDockSettings {
   host: string
   /** 监听端口（官方默认 3080） */
   port: number
-  /** DSH_HOME 模式：shared=官方共享 ~/.dsh（默认）；per-vault=每 vault 隔离；custom=自定义 */
+  /** DSH_HOME 模式：per-vault=每 vault 隔离（默认）；shared=官方共享 ~/.dsh；custom=自定义 */
   dshHomeMode: DshHomeMode
   /** 自定义 DSH_HOME 路径（仅 custom 模式生效） */
   dshHome: string
@@ -32,7 +32,7 @@ export const DEFAULT_SETTINGS: DshDockSettings = {
   nodeBin: '',
   host: '127.0.0.1',
   port: 3080,
-  dshHomeMode: 'shared',
+  dshHomeMode: 'per-vault',
   dshHome: '',
   useEmbeddedNode: false,
   autostart: true,
@@ -153,8 +153,8 @@ export class DshDockSettingsTab extends PluginSettingTab {
       .setName('模式')
       .setDesc('per-vault 模式 = 会话按库隔离（各库面板只显示本库创建的会话），但模型/密钥/主题配置与运行时插件全局共享一份，配一次全库生效。')
       .addDropdown((dd) => {
+        dd.addOption('per-vault', '每 vault 隔离会话 ~/.dsh/vaults/<名>-<hash>（默认；配置与插件仍共享）')
         dd.addOption('shared', '官方共享 ~/.dsh（所有 vault 共用一套配置、插件与会话）')
-        dd.addOption('per-vault', '每 vault 隔离会话 ~/.dsh/vaults/<名>-<hash>（配置与插件仍共享）')
         dd.addOption('custom', '自定义路径')
         dd.setValue(this.plugin.settings.dshHomeMode)
         dd.onChange(async (v) => {

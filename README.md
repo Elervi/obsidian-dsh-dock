@@ -21,7 +21,8 @@
 2. Obsidian：设置 → 第三方插件 → 启用 **DSH Dock**；
 3. 点击侧边栏机器人图标，或运行命令「打开 DSH 面板」。
 
-首次启动自动初始化 `$DSH_HOME` 并拉起官方 `dsh web`，几秒内面板出现。
+首次启动自动初始化 `$DSH_HOME`（默认 **per-vault 隔离**，会话按库独立、配置全局共享）
+并拉起官方 `dsh web`，几秒内面板出现。
 
 ## ⚙️ 设置
 
@@ -30,7 +31,7 @@
 | dsh CLI 路径 | 留空自动探测（`$DSH_BIN` → npm 全局 → 常见全局目录） |
 | Node 可执行文件 | 留空用系统 node（最稳定） |
 | 监听端口 | 默认 3080；填 0 让 OS 分配空闲端口 |
-| DSH_HOME 模式 | 官方共享 `~/.dsh`（默认，复用已有配置/会话）· 每库隔离 `~/.dsh/vaults/<名>-<hash6>` · 自定义 |
+| DSH_HOME 模式 | 每库隔离 `~/.dsh/vaults/<名>-<hash6>`（默认）· 官方共享 `~/.dsh` · 自定义 |
 | 随 Obsidian 自动启动 | 默认开 |
 
 ## 🔧 工作原理
@@ -43,7 +44,7 @@ Obsidian (Electron)
      ├─ 端口探测：node:http（渲染进程 CSP 会屏蔽 fetch，不能用浏览器探测）
      │   └─ 已有服务 → 直接挂接，不重复拉起
      ├─ spawn: node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>
-     │         env: DSH_HOME（默认 ~/.dsh；per-vault / 自定义可切换）
+     │         env: DSH_HOME（默认 per-vault 隔离；shared / 自定义可切换）
      ├─ 等待就绪：子进程秒退立即报真实错误（如 EADDRINUSE），不盲等 120s
      └─ iframe 面板 → http://127.0.0.1:<port>/
 ```
@@ -52,10 +53,10 @@ Obsidian (Electron)
 > 首次启动自动初始化 profile，**无需 pnpm、无需联网**；默认不开 SQLite，
 > Node 20+ 即可跑默认配置。
 
-## 🗂️ per-vault 隔离模式（V0.2 核心）
+## 🗂️ per-vault 隔离模式（默认，V0.2 核心特性）
 
 per-vault 模式（DSH_HOME = `~/.dsh/vaults/<库名>-<hash6>`，中文名不碰撞、改名不孤儿）
-的隔离边界是 **「会话隔离，配置共享」**：
+是 **默认模式**，隔离边界是 **「会话隔离，配置共享」**：
 
 | 维度 | 按库隔离 | 机制 |
 |---|---|---|
@@ -89,7 +90,7 @@ per-vault 模式（DSH_HOME = `~/.dsh/vaults/<库名>-<hash6>`，中文名不碰
 ③ 面板里新建会话选「Obsidian 模式」，直接说"读一下今天的笔记"、"把这段整理进
 [[xxx]]"，Agent 自动定位当前库读写，无需任何路径配置。
 
-> 配套说明：只有 DSH_HOME 模式为 **per-vault** 才注入 env 并设 cwd 为库根；
+> 配套说明：只有 DSH_HOME 模式为 **per-vault**（V0.2 起默认）才注入 env 并设 cwd 为库根；
 > **shared** 模式多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。
 > 双向印证见工具 README「🤝 与 obsidian-dsh-dock 珠联璧合」一节。
 
@@ -119,6 +120,7 @@ scripts/smoke.mjs 端到端冒烟
 
 | 日期 | 更新 |
 |---|---|
+| 2026-08-19 | **默认 DSH_HOME 模式改为 per-vault**（会话按库隔离、配置全局共享）；设置页下拉默认项与 README 同步 |
 | 2026-08-19 | README 精简重构：开箱即用安装（复制 3 文件，无需构建）置顶，构建路线并入「开发者」一节；本地 `dist/obsidian-dsh-dock.zip` 重新打包为最新产物（发布用，不入库） |
 | 2026-08-19 | 「与 dsh-tool-obsidian-vault 联动」扩写为「珠联璧合」章节（配合机制表格 + 三步启用），与工具侧 README 双向印证 |
 | 2026-08-17 | per-vault 配置共享（模型/密钥/主题配一次全库生效）；profiles / .agent-presets 软链共享；`DSH_OBSIDIAN_VAULT_PATH` env 注入；spawn `cwd = vaultRoot` 消除跨库串扰 |

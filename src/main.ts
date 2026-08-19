@@ -26,8 +26,8 @@ import { currentVaultInfo, writeCurrentVaultMarker } from './currentVault'
 
 /**
  * 计算 DSH_HOME：
- * - shared（默认）：~/.dsh —— 与官方 dsh CLI 完全一致，复用已有配置/会话；
- * - per-vault：~/.dsh/vaults/<可读名>-<hash6> —— 每 vault 独立（hash 消歧，中文名不碰撞）；
+ * - per-vault（默认）：~/.dsh/vaults/<可读名>-<hash6> —— 每 vault 独立（hash 消歧，中文名不碰撞）；
+ * - shared：~/.dsh —— 与官方 dsh CLI 完全一致，复用已有配置/会话；
  * - custom：用户填写的绝对路径。
  */
 export function computeDshHome(s: Pick<DshDockSettings, 'dshHomeMode' | 'dshHome'>, vaultRoot: string | undefined): string {
