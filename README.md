@@ -1,186 +1,180 @@
-# DSH Dock（V0.2）
-已发布到obsidian插件市场
-> Dock the official **DeepSeek Harness Web** (127.0.0.1:3080) into an Obsidian
-> sidebar panel. Native official: runs the official `dsh` CLI and embeds the
-> official UI as-is. Requires Obsidian desktop 1.5.0+ and the official `dsh` CLI
-> (`npm i -g @deepseek-ai/dsh`). Pairs with
-> [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)
-> for an agent-driven note workflow.
+# DSH Dock
 
-> 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏面板。
-> 官方原生：直接运行官方 `dsh CLI`，官方 UI 原样嵌入，只美化插件外壳。
+[![Obsidian 插件市场 已提交](https://img.shields.io/badge/Obsidian%20%E6%8F%92%E4%BB%B6%E5%B8%82%E5%9C%BA-%E5%B7%B2%E6%8F%90%E4%BA%A4-7C3AED?style=flat-square)](https://obsidian.md/plugins?id=dsh-dock)
+[![GitHub release](https://img.shields.io/github/v/release/Elervi/obsidian-dsh-dock?style=flat-square)](https://github.com/Elervi/obsidian-dsh-dock/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-## About
+> 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏——跑官方 `dsh CLI`、官方 UI 原样嵌入，只做外壳。
+> Dock the official DeepSeek Harness Web into an Obsidian sidebar: spawn the official `dsh` CLI and embed the official UI as-is.
 
-DSH Dock docks the official DeepSeek Harness Web UI (served by the official
-`dsh` CLI at 127.0.0.1:3080) into an Obsidian sidebar panel. It is a thin
-shell around the official tooling: the plugin locates the installed `dsh`
-binary, spawns the official `dsh web` server, and embeds the official UI in an
-iframe — no reimplementation, no modification of the official interface.
+<div class="rt-tabs">
 
-### Features
+<input class="rt-radio" type="radio" id="rt-zh" name="rt-lang" checked>
+<input class="rt-radio" type="radio" id="rt-en" name="rt-lang">
 
-- **Zero-build install** — copy 3 files (`main.js`, `manifest.json`,
-  `styles.css`) into `.obsidian/plugins/dsh-dock/` and enable the plugin.
-- **Native official** — runs the official `dsh` CLI and embeds the official
-  UI as-is.
-- **Per-vault isolation (default)** — each vault gets its own DSH_HOME and
-  its own derived port, so sessions never leak across vaults, while model,
-  credentials and theme config stay shared (`~/.dsh`).
-- **Pairs with dsh-tool-obsidian-vault** — together they enable an
-  agent-driven note workflow directly inside Obsidian.
+<div class="rt-nav">
+<label class="rt-tab" for="rt-zh">🇨🇳 中文</label>
+<label class="rt-tab" for="rt-en">🇬🇧 English</label>
+</div>
 
-### Install
-
-Prerequisites: Obsidian desktop 1.5.0+, the official `dsh` CLI
-(`npm i -g @deepseek-ai/dsh`), and Node.js 20+.
-
-1. Copy `main.js`, `manifest.json` and `styles.css` from the repo root to
-   `.obsidian/plugins/dsh-dock/`.
-2. In Obsidian, go to Settings → Community plugins and enable **DSH Dock**.
-3. Click the robot icon in the sidebar (or run the "Open DSH panel" command).
-
-On first start the plugin initializes `$DSH_HOME` (per-vault isolation by
-default) and spawns the official `dsh web`; the panel appears in a few
-seconds.
-
-### Companion tool
-
-[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)
-is the DSH-side tool plugin that pairs with this one: it exposes 16
-`vault_*` tools (search, read, create, edit, rename, backlinks, frontmatter
-and more) plus a self-contained agent preset. With both installed you can say
-"read today's notes" in the DSH panel and the agent will locate and operate
-on the current vault automatically.
-
-### License
-
-MIT
-
----
+<div class="rt-panel rt-panel-zh">
 
 ## ✨ 特性
 
-- 📦 **开箱即用** — 无需构建，复制仓库根 3 个文件即装
-- 🪟 **官方原生** — 定位 `dsh` → spawn 官方 `dsh web` → iframe 原样嵌入官方 UI
-- 🗂️ **per-vault 隔离** — 会话按库隔离、配置全局共享，多库并行互不串扰
-- 🤝 **珠联璧合** — 与 [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)
-  联动，开箱即用「Obsidian 内 Agent 笔记工作流」
+- 📦 **开箱即用** — Obsidian 市场一键安装，或复制 3 个文件
+- 🪟 **官方原生** — 定位 dsh → 拉起官方 `dsh web` → iframe 原样嵌入
+- 🗂️ **Per-vault 隔离** — 会话按库独立、配置全局共享，多库并行互不串扰
+- 🤝 **珠联璧合** — 与 [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 联动，Obsidian 内直接驱动 Agent 笔记工作流
+- 🧹 **进程自清洁** — 卸载/停用 SIGTERM 关停；崩溃残留的孤儿进程下次启动自动清扫
 
-## 📦 安装（开箱即用）
+## 📦 安装
 
-> 前置：Obsidian **桌面端** 1.5.0+；官方 dsh 已安装（`npm i -g @deepseek-ai/dsh`）；
-> 系统有 `node`（≥ 20 即可，会话全文搜索才需 ≥ 22.5）。
+> 前置：Obsidian **桌面端** ≥ 1.5.0 · `npm i -g @deepseek-ai/dsh` · Node ≥ 20
 
-1. 把仓库根目录的 `main.js` + `manifest.json` + `styles.css` 复制到 vault 的
-   `.obsidian/plugins/dsh-dock/`；
-2. Obsidian：设置 → 第三方插件 → 启用 **DSH Dock**；
-3. 点击侧边栏机器人图标，或运行命令「打开 DSH 面板」。
+**① 插件市场（推荐）**：设置 → 第三方插件 → 浏览 → 搜索 **DSH Dock** → 安装并启用。
 
-首次启动自动初始化 `$DSH_HOME`（默认 **per-vault 隔离**，会话按库独立、配置全局共享）
-并拉起官方 `dsh web`，几秒内面板出现。
+**② 手动安装**：把 `main.js` + `manifest.json` + `styles.css` 复制到 vault 的 `.obsidian/plugins/dsh-dock/`，再在设置中启用。
+
+启用后点侧边栏机器人图标（或命令「打开 DSH 面板」）。首次启动自动初始化 `$DSH_HOME` 并拉起官方 `dsh web`，几秒后面板出现。
+
+## 🗂️ Per-vault 隔离（默认）
+
+**会话隔离、配置共享**——模型、密钥、主题配一次全库生效，只有会话/历史按库独立。
+
+| 维度 | 行为 |
+| --- | --- |
+| 会话 / 历史 | 每库独占 `~/.dsh/vaults/<库名>-<hash6>` |
+| 监听端口 | `port + vaultRoot hash % 4096`（冲突概率 ~1/4096） |
+| vault 识别 | 注入 `DSH_OBSIDIAN_VAULT_PATH` + spawn `cwd = vaultRoot` |
+| 模型 / 密钥 / 主题 / presets | 全局共享：软链 `profiles/` + `cordis.patch.yml` 指回 `~/.dsh` |
 
 ## ⚙️ 设置
 
-| 设置 | 说明 |
-|---|---|
-| dsh CLI 路径 | 留空自动探测（`$DSH_BIN` → npm 全局 → 常见全局目录） |
-| Node 可执行文件 | 留空用系统 node（最稳定） |
-| 监听端口 | 默认 3080；填 0 让 OS 分配空闲端口 |
-| DSH_HOME 模式 | 每库隔离 `~/.dsh/vaults/<名>-<hash6>`（默认）· 官方共享 `~/.dsh` · 自定义 |
-| 随 Obsidian 自动启动 | 默认开 |
+| 设置 | 默认 |
+| --- | --- |
+| dsh CLI 路径 | 自动探测（`$DSH_BIN` → npm 全局） |
+| Node 可执行文件 | 系统 node（最稳定） |
+| 监听端口 | 3080；`0` = OS 分配空闲端口 |
+| DSH_HOME 模式 | per-vault 隔离（可切换 shared / 自定义） |
+| 随 Obsidian 自动启动 | ✅ 开 |
 
-## 🔧 工作原理
+## 🔧 原理
 
 ```
-Obsidian (Electron)
- └─ DSH Dock 插件
-     ├─ 定位 dsh：设置 → $DSH_BIN → npm root -g → 常见全局目录
-     ├─ 选择 Node：系统 node 最稳定（Electron 内置 Node 实测不可靠，默认关）
-     ├─ 端口探测：node:http（渲染进程 CSP 会屏蔽 fetch，不能用浏览器探测）
-     │   └─ 已有服务 → 直接挂接，不重复拉起
-     ├─ spawn: node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>
-     │         env: DSH_HOME（默认 per-vault 隔离；shared / 自定义可切换）
-     ├─ 等待就绪：子进程秒退立即报真实错误（如 EADDRINUSE），不盲等 120s
-     └─ iframe 面板 → http://127.0.0.1:<port>/
+node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>   env: DSH_HOME
+→ 等待就绪（秒退立即报错，不盲等）→ iframe 面板 → http://127.0.0.1:<port>/
+端口上已有 DSH 服务 → 直接挂接，不重复拉起
 ```
-
-> 已验证（`@deepseek-ai/dsh@0.1.0-rc.6`）：`dsh web` 默认绑定 127.0.0.1:3080；
-> 首次启动自动初始化 profile，**无需 pnpm、无需联网**；默认不开 SQLite，
-> Node 20+ 即可跑默认配置。
-
-## 🗂️ per-vault 隔离模式（默认，V0.2 核心特性）
-
-per-vault 模式（DSH_HOME = `~/.dsh/vaults/<库名>-<hash6>`，中文名不碰撞、改名不孤儿）
-是 **默认模式**，隔离边界是 **「会话隔离，配置共享」**：
-
-| 维度 | 按库隔离 | 机制 |
-|---|---|---|
-| 会话 / 历史（sessions、storages） | ✅ | 每库独占 DSH_HOME 目录 |
-| 监听端口 | ✅ | `settings.port + (vaultRoot hash % 4096)`，冲突概率 ~1/4096 |
-| 会话 cwd / vault 识别 | ✅ | spawn `cwd = vaultRoot` + 注入 `DSH_OBSIDIAN_VAULT_PATH` env，杜绝跨库串扰 |
-| 运行时插件（profiles） | ❌ 共享 | `profiles/` 软链 → `~/.dsh/profiles`，全局一份 |
-| agent presets | ❌ 共享 | `.agent-presets/` 软链 → `~/.dsh/.agent-presets` |
-| 模型 / API 密钥 / 界面主题 | ❌ 共享 | `cordis.patch.yml` 把 settings/credentials 指回 `~/.dsh` |
-
-**配置共享原理**：插件自动在共享 profile 写 `cordis.patch.yml`，把 `settings` /
-`credentials` 的 `path` 指回共享根——**模型、密钥、主题配一次全库生效**，只有会话按库隔离。
-（想按库独立主题：删除 patch 里的 `settings` 条目、保留 `credentials` 即可。）
-
-## 🤝 与 dsh-tool-obsidian-vault 珠联璧合
-
-[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 是 **DSH 侧**
-工具插件（16 个 `vault_*` 工具，让 Agent 直接读写本地 Obsidian 笔记）。本插件跑在
-**Obsidian 侧**——一个管"门"（让 DSH 住进 Obsidian）、一个管"钥匙"（让 Agent 认识 Obsidian）：
-
-| 环节 | 本插件（Obsidian 侧） | 工具侧如何受益（DSH 侧） |
-| --- | --- | --- |
-| 启动 DSH | 点机器人图标，面板里就是官方 DSH Web UI | 无需自己开终端跑 `dsh web` |
-| 定位当前库 | per-vault 注入 `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` | 「注入的本库」优先于工作目录巧合，多库同开不串 |
-| 会话工作目录 | per-vault spawn `cwd = vaultRoot` | 会话 cwd 即库根，`vault_current` 判定依据清晰 |
-| 多库并行 | 端口按库 hash 偏移互不冲突 | 每个库的面板共享同一份 preset，工具一次装好全库可用 |
-| 配置共享 | `cordis.patch.yml` 指回 `~/.dsh` | 配一次全库生效，只有会话/历史按库隔离 |
-
-**三步启用**：① 装好本插件 → ② 在 DSH 侧装工具的 **Obsidian 模式** preset
-（复制其 `preset/` 到 `~/.dsh/.agent-presets/obsidian`，见工具 README）→
-③ 面板里新建会话选「Obsidian 模式」，直接说"读一下今天的笔记"、"把这段整理进
-[[xxx]]"，Agent 自动定位当前库读写，无需任何路径配置。
-
-> 配套说明：只有 DSH_HOME 模式为 **per-vault**（V0.2 起默认）才注入 env 并设 cwd 为库根；
-> **shared** 模式多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。
-> 双向印证见工具 README「🤝 与 obsidian-dsh-dock 珠联璧合」一节。
 
 ## ⚠️ 已知限制
 
-- 依赖 `child_process`：桌面端可用，**移动端不可用**（`isDesktopOnly`）；
-- 端口被**非 DSH 服务**占用：子进程秒退、立即报错；被**另一个 DSH** 占用：直接挂接已有服务；
-- 会话全文搜索需 Node ≥ 22.5；
-- 卸载/停用时 SIGTERM 关停服务；Obsidian 崩溃/强退残留的孤儿进程会在**下次启动时自动清扫**（PID 文件 + 命令行身份校验 + PPID 判定：只清本库端口上的、父进程已不在的 dsh web，多库/多窗口并发安全），随后重新拉起服务。
+- 仅桌面端（依赖 `child_process`）
+- 端口被**非 DSH 服务**占用 → 秒退报错；被另一 DSH 占用 → 直接挂接
+- 会话全文搜索需 Node ≥ 22.5
 
-## 🛠️ 开发者
+## 🤝 珠联璧合
 
-```sh
-npm install && npm run build   # → main.js + lib/launcher.cjs
-npm run build && npm run smoke # 端到端冒烟（3099 端口真实拉起官方 dsh web，无需 Obsidian）
+[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 是 **DSH 侧**工具插件（16 个 `vault_*` 工具，让 Agent 直接读写本地 Obsidian 笔记）；本插件是 **Obsidian 侧**外壳——一个管「门」（让 DSH 住进 Obsidian），一个管「钥匙」（让 Agent 认识 Obsidian）。
+
+| 环节 | 本插件（Obsidian 侧） | 工具侧如何受益（DSH 侧） |
+| --- | --- | --- |
+| 启动 DSH | 点机器人图标，面板即官方 DSH Web UI | 无需自己开终端跑 `dsh web` |
+| 定位当前库 | 注入 `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` | 「注入的本库」优先于工作目录巧合，多库同开不串 |
+| 会话工作目录 | spawn `cwd = vaultRoot` | 会话 cwd 即库根，`vault_current` 判定依据清晰 |
+| 多库并行 | 端口按库 hash 偏移互不冲突 | 面板共享同一份 preset，一次装好全库可用 |
+| 配置共享 | `cordis.patch.yml` 指回 `~/.dsh` | 配一次全库生效，只有会话/历史按库隔离 |
+
+**三步启用**：① 装好本插件 → ② 在 DSH 侧装 **Obsidian 模式** preset（复制其 `preset/` 到 `~/.dsh/.agent-presets/obsidian`）→ ③ 面板新建会话选「Obsidian 模式」，说「读一下今天的笔记」「把这段整理进 [[xxx]]」，Agent 自动读写当前库，无需任何路径配置。
+
+> 仅 **per-vault** 模式（默认）注入 env 并设 cwd 为库根；**shared** 模式多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。
+
+</div>
+
+<div class="rt-panel rt-panel-en">
+
+## ✨ Features
+
+- 📦 **Zero-build** — one-click install from the Obsidian marketplace, or copy 3 files
+- 🪟 **Native official** — locates `dsh` → spawns the official `dsh web` → embeds the official UI in an iframe
+- 🗂️ **Per-vault isolation** — sessions isolated per vault, config shared across vaults
+- 🤝 **Pairs with [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)** — agent-driven note workflow inside Obsidian
+- 🧹 **Self-cleaning** — SIGTERM on unload/disable; orphan processes left by a crash are swept on next start
+
+## 📦 Install
+
+> Prereqs: Obsidian **desktop** ≥ 1.5.0 · `npm i -g @deepseek-ai/dsh` · Node ≥ 20
+
+**① From the marketplace (recommended)**: Settings → Community plugins → Browse → search **DSH Dock** → Install & enable.
+
+**② Manually**: copy `main.js` + `manifest.json` + `styles.css` into `.obsidian/plugins/dsh-dock/` in your vault, then enable it.
+
+Click the robot icon in the sidebar (or run the "Open DSH panel" command). On first start it initializes `$DSH_HOME` and spawns the official `dsh web` — the panel appears in seconds.
+
+## 🗂️ Per-vault isolation (default)
+
+**Isolated sessions, shared config** — model, API keys and theme are configured once and apply to every vault; only sessions/history are per-vault.
+
+| Aspect | Behavior |
+| --- | --- |
+| Sessions / history | Each vault owns `~/.dsh/vaults/<name>-<hash6>` |
+| Port | `port + vaultRoot hash % 4096` (~1/4096 collision) |
+| Vault detection | Injects `DSH_OBSIDIAN_VAULT_PATH` + spawn `cwd = vaultRoot` |
+| Model / keys / theme / presets | Shared globally: symlinked `profiles/` + `cordis.patch.yml` pointing to `~/.dsh` |
+
+## ⚙️ Settings
+
+| Setting | Default |
+| --- | --- |
+| dsh CLI path | Auto-detect (`$DSH_BIN` → npm global) |
+| Node executable | System node (most stable) |
+| Port | 3080; `0` = let the OS pick a free port |
+| DSH_HOME mode | per-vault isolation (shared / custom available) |
+| Auto-start with Obsidian | ✅ on |
+
+## 🔧 How it works
+
+```
+node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>   env: DSH_HOME
+→ wait until ready (instant exit = real error, no blind wait) → iframe → http://127.0.0.1:<port>/
+existing DSH service on the port → attach directly, no second spawn
 ```
 
-```
-src/launcher.ts   纯启动逻辑（无 Obsidian 依赖，可独立测试）
-src/main.ts       插件生命周期：启动/停止/状态栏/命令/ribbon
-src/view.ts       iframe 面板（Custom Frames 同款做法）
-src/settings.ts   设置页
-scripts/smoke.mjs 端到端冒烟
-```
+## ⚠️ Limitations
 
-## 📜 更新记录
+- Desktop only (depends on `child_process`)
+- Port taken by a **non-DSH** service → exits fast with a clear error; taken by another DSH → attaches to it
+- Full-text session search needs Node ≥ 22.5
 
-| 日期 | 更新 |
-|---|---|
-| 2026-08-19 | 「零自研」表述改为「官方原生」：README / 设置页 / manifest 统一为「直接运行官方 dsh CLI，官方 UI 原样嵌入」 |
-| 2026-08-19 | **默认 DSH_HOME 模式改为 per-vault**（会话按库隔离、配置全局共享）；设置页下拉默认项与 README 同步 |
-| 2026-08-19 | README 精简重构：开箱即用安装（复制 3 文件，无需构建）置顶，构建路线并入「开发者」一节；本地 `dist/obsidian-dsh-dock.zip` 重新打包为最新产物（发布用，不入库） |
-| 2026-08-19 | 「与 dsh-tool-obsidian-vault 联动」扩写为「珠联璧合」章节（配合机制表格 + 三步启用），与工具侧 README 双向印证 |
-| 2026-08-17 | per-vault 配置共享（模型/密钥/主题配一次全库生效）；profiles / .agent-presets 软链共享；`DSH_OBSIDIAN_VAULT_PATH` env 注入；spawn `cwd = vaultRoot` 消除跨库串扰 |
+## 🤝 Companion plugin
+
+[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) is the **DSH-side** tool plugin (16 `vault_*` tools that let the agent read/write local notes); this plugin is the **Obsidian-side** shell — one opens the door (hosts DSH inside Obsidian), the other hands out the keys (teaches the agent about Obsidian).
+
+| Stage | This plugin (Obsidian side) | Tool side benefit (DSH side) |
+| --- | --- | --- |
+| Start DSH | click the robot icon, official DSH Web UI in the panel | no terminal needed for `dsh web` |
+| Locate the vault | injects `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` | "injected vault" beats working-directory coincidence |
+| Session cwd | spawn `cwd = vaultRoot` | session cwd is the vault root; `vault_current` resolves clearly |
+| Multiple vaults | per-vault port offset avoids collisions | all panels share one preset — install once, every vault works |
+| Shared config | `cordis.patch.yml` points back to `~/.dsh` | configure once; only sessions are isolated |
+
+**Enable in 3 steps**: ① install this plugin → ② install the tool's **Obsidian mode** preset (copy its `preset/` to `~/.dsh/.agent-presets/obsidian`) → ③ open a session in **Obsidian mode** and say "read today's notes" or "file this under [[xxx]]" — the agent reads/writes the current vault automatically, no path config needed.
+
+> Only **per-vault** mode (default) injects env vars and sets cwd to the vault root; **shared** mode shares one service across vaults and the tool falls back to "most recently opened vault / working directory".
+
+</div>
+
+</div>
+
+<style>
+.rt-tabs .rt-radio{position:absolute;opacity:0;pointer-events:none}
+.rt-tabs .rt-panel{display:none;padding-top:.5rem}
+.rt-tabs .rt-nav{border-bottom:1px solid #d0d7de;margin-bottom:1rem}
+.rt-tabs .rt-tab{display:inline-block;padding:.4rem .9rem;cursor:pointer;font-weight:600;color:#57606a;border-bottom:2px solid transparent;margin-bottom:-1px}
+.rt-tabs #rt-zh:checked ~ .rt-nav .rt-tab[for="rt-zh"],
+.rt-tabs #rt-en:checked ~ .rt-nav .rt-tab[for="rt-en"]{color:#0969da;border-bottom-color:#0969da}
+.rt-tabs #rt-zh:checked ~ .rt-panel-zh,
+.rt-tabs #rt-en:checked ~ .rt-panel-en{display:block}
+</style>
 
 ## License
 
