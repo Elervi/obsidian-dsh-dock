@@ -14,11 +14,14 @@ import * as path from 'path'
 import {
   embeddedNodeVersion,
   ensureDshRunning,
+  removeDshPidFile,
   resolveDshBin,
   resolveNodeBin,
   safeVaultName,
   stableHash,
   stopProcess,
+  sweepOrphanDsh,
+  writeDshPidFile,
   type ServerStatus,
 } from './launcher'
 import { DshDockSettingsTab, DEFAULT_SETTINGS, type DshDockSettings } from './settings'
@@ -224,6 +227,12 @@ export default class DshDockPlugin extends Plugin {
       const port = computePort(this.settings, vaultRoot)
       const sharedConfigRoot = computeSharedConfigRoot(this.settings, vaultRoot)
       const vaultInfo = currentVaultInfo(this.app)
+      // 孤儿清扫：上次 Obsidian 崩溃/强退残留的本端口 dsh web 先清掉再拉起，
+      // 避免"挂接孤儿"让残留永久累积（多库/多窗口并发安全，见 launcher.ts）。
+      const swept = await sweepOrphanDsh(dshHome, port)
+      if (swept) {
+        new Notice(`DSH: 已清理上次残留的服务 (端口 ${port})`)
+      }
       const result = await ensureDshRunning({
         dshBin: this.settings.dshBin,
         nodeBin: this.settings.nodeBin,
@@ -244,7 +253,11 @@ export default class DshDockPlugin extends Plugin {
           : {},
       })
       this.proc = result.proc ?? null
-      if (result.status.kind === 'running' && result.proc) {
+      if (result.status.kind === 'running' && result.proc && !result.status.attached) {
+        // 新起进程：写入 PID 文件，供下次启动清扫孤儿时识别归属。
+        if (result.proc.pid != null) {
+          writeDshPidFile(dshHome, port, result.proc.pid)
+        }
         this.hookChildLogs(result.proc)
       }
       this.setStatus(result.status)
@@ -269,6 +282,7 @@ export default class DshDockPlugin extends Plugin {
       await stopProcess(this.proc)
       this.proc = null
     }
+    removeDshPidFile(computeDshHome(this.settings, this.vaultRoot()))
     this.setStatus({ kind: 'stopped' })
   }
 
@@ -277,6 +291,7 @@ export default class DshDockPlugin extends Plugin {
     proc.once('exit', (code, signal) => {
       if (this.proc === proc) {
         this.proc = null
+        removeDshPidFile(computeDshHome(this.settings, this.vaultRoot()))
         if (this.status.kind === 'running' && !this.status.attached) {
           this.setStatus({ kind: 'error', message: `DSH 进程退出: code=${code} signal=${signal ?? ''}` })
         }

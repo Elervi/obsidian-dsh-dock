@@ -513,3 +513,187 @@ export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5
     }
   })
 }
+
+// ---------------------------------------------------------------------------
+// 孤儿进程清扫（PID 文件 + 命令行身份校验 + PPID 判定）
+// ---------------------------------------------------------------------------
+//
+// 背景：Obsidian 崩溃/强退时 onunload 不会执行，插件 spawn 的 `dsh web`
+// 子进程会变成孤儿（macOS/Linux 下被 reparent 到 launchd，ppid=1），且旧版
+// 插件"端口有服务就挂接"会把孤儿永久保留。本模块在每次启动前清扫本库端口
+// 上的孤儿：先 SIGTERM、超时 SIGKILL，再由调用方重新 spawn。
+//
+// 安全设计（多库/多窗口并发安全）：
+// - 只动"本库派生端口"上的服务，绝不碰其他库的端口；
+// - 只杀"确实是 dsh web 且监听本端口"的进程（命令行身份校验，防 pid 复用误杀）；
+// - 只杀孤儿（POSIX: ppid==1；Windows: 启动时间早于本次会话），
+//   当前会话里其他窗口拉起的活服务绝不会被误杀。
+
+export interface DshPidRecord {
+  pid: number
+  port: number
+  ts: number
+}
+
+/** PID 文件路径：放在 per-vault 的 DSH_HOME 里，随库隔离、随会话归属 */
+export function dshPidFilePath(dshHome: string): string {
+  return path.join(dshHome, '.dsh-dock.pid')
+}
+
+/** 记录本次 spawn 的子进程（服务就绪后调用） */
+export function writeDshPidFile(dshHome: string, port: number, pid: number): void {
+  try {
+    fs.mkdirSync(dshHome, { recursive: true })
+    fs.writeFileSync(dshPidFilePath(dshHome), JSON.stringify({ pid, port, ts: Date.now() }))
+  } catch (err) {
+    console.warn('[dsh-dock] 写入 PID 文件失败', err)
+  }
+}
+
+export function readDshPidFile(dshHome: string): DshPidRecord | null {
+  try {
+    const raw = fs.readFileSync(dshPidFilePath(dshHome), 'utf8')
+    const rec = JSON.parse(raw) as Partial<DshPidRecord>
+    if (typeof rec.pid === 'number' && typeof rec.port === 'number') return rec as DshPidRecord
+  } catch {
+    /* 无文件或损坏 → null */
+  }
+  return null
+}
+
+export function removeDshPidFile(dshHome: string): void {
+  try {
+    fs.unlinkSync(dshPidFilePath(dshHome))
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 进程是否存活（signal 0 探测，跨平台） */
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 该 pid 的进程命令行是否就是监听 <port> 的 dsh web（防 pid 复用误杀） */
+export function isDshWebOnPort(pid: number, port: number): boolean {
+  try {
+    if (process.platform === 'win32') {
+      const out = spawnSync('wmic', ['process', 'where', `processid=${pid}`, 'get', 'commandline'], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+      })
+      const cmd = out.stdout || ''
+      return cmd.includes('dsh') && cmd.includes(`--port ${port}`)
+    }
+    const out = spawnSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 5000,
+    })
+    const cmd = (out.stdout || '').trim()
+    return cmd.includes('dsh') && cmd.includes(`--port ${port}`)
+  } catch {
+    return false
+  }
+}
+
+/** POSIX: 读取进程父 pid；失败返回 -1 */
+export function processPpid(pid: number): number {
+  try {
+    const out = spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 })
+    const ppid = parseInt((out.stdout || '').trim(), 10)
+    return Number.isFinite(ppid) ? ppid : -1
+  } catch {
+    return -1
+  }
+}
+
+/**
+ * 孤儿判定：
+ * - POSIX：孤儿被 reparent 到 launchd，ppid === 1（跨会话判定最可靠）；
+ * - Windows：无 reparent 语义，退回"进程启动早于本次 Obsidian 会话"（PID 文件 ts）。
+ */
+export function isOrphanPid(pid: number, pidFileTs: number): boolean {
+  if (process.platform === 'win32') {
+    return pidFileTs < Date.now() - process.uptime() * 1000
+  }
+  return processPpid(pid) === 1
+}
+
+/** 按 pid 停止：SIGTERM → 超时 SIGKILL（POSIX）；Windows 用 taskkill /F */
+export async function stopProcessByPid(pid: number, timeoutMs = 3000): Promise<void> {
+  if (!isProcessAlive(pid)) return
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
+    } catch {
+      /* ignore */
+    }
+    return
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      try {
+        process.kill(pid, 'SIGKILL')
+      } catch {
+        /* ignore */
+      }
+    }, timeoutMs)
+    const poll = setInterval(() => {
+      if (!isProcessAlive(pid)) {
+        clearInterval(poll)
+        clearTimeout(timer)
+        resolve()
+      }
+    }, 100)
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      clearInterval(poll)
+      clearTimeout(timer)
+      resolve()
+    }
+  })
+}
+
+/**
+ * 启动前孤儿清扫。返回是否清理了残留服务。
+ *
+ * 1. PID 文件命中 → 校验命令行身份（dsh web --port <port>）→ 孤儿则杀掉；
+ * 2. 无 PID 文件（旧版升级/文件丢失）→ pgrep 按端口反查 → 同样校验后清理。
+ *
+ * 只清理"监听本端口且父进程已不在"的 dsh web；当前会话其他窗口拉起的
+ * 活服务 ppid != 1，绝不会被误杀。
+ */
+export async function sweepOrphanDsh(dshHome: string, port: number): Promise<boolean> {
+  const candidates = new Set<number>()
+  const rec = readDshPidFile(dshHome)
+  if (rec && rec.port === port && isProcessAlive(rec.pid) && isDshWebOnPort(rec.pid, port)) {
+    candidates.add(rec.pid)
+  }
+  if (process.platform !== 'win32') {
+    try {
+      const out = spawnSync('pgrep', ['-f', `dsh.*--port ${port}`], { encoding: 'utf8', timeout: 5000 })
+      for (const line of (out.stdout || '').split(/\s+/)) {
+        const pid = parseInt(line, 10)
+        if (Number.isFinite(pid) && pid > 0 && isDshWebOnPort(pid, port)) candidates.add(pid)
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  let swept = false
+  for (const pid of candidates) {
+    if (!isOrphanPid(pid, rec?.ts ?? 0)) continue
+    console.warn(`[dsh-dock] 清理孤儿 dsh web (pid=${pid}, port=${port})`)
+    await stopProcessByPid(pid)
+    swept = true
+  }
+  if (swept) removeDshPidFile(dshHome)
+  return swept
+}
