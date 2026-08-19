@@ -1,12 +1,12 @@
 # DSH Dock（V0.2）
 
 > 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏面板。
-> 零自研 DSH 能力：直接运行官方 `dsh CLI`、官方 UI 原样嵌入，只美化插件外壳。
+> 官方原生：直接运行官方 `dsh CLI`、官方 UI 原样嵌入，不重复造轮子，只美化插件外壳。
 
 ## ✨ 特性
 
 - 📦 **开箱即用** — 无需构建，复制仓库根 3 个文件即装
-- 🪟 **零自研** — 只做三件事：定位 `dsh` → spawn 官方 `dsh web` → iframe 嵌入面板
+- 🪟 **官方原生** — 不重复造轮子：定位 `dsh` → spawn 官方 `dsh web` → iframe 嵌入面板
 - 🗂️ **per-vault 隔离** — 会话按库隔离、配置全局共享，多库并行互不串扰
 - 🤝 **珠联璧合** — 与 [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)
   联动，开箱即用「Obsidian 内 Agent 笔记工作流」
@@ -120,6 +120,7 @@ scripts/smoke.mjs 端到端冒烟
 
 | 日期 | 更新 |
 |---|---|
+| 2026-08-19 | 「零自研」表述改为「官方原生」：README / 设置页 / manifest 描述统一为「直接运行官方 dsh CLI、官方 UI 原样嵌入，不重复造轮子」 |
 | 2026-08-19 | **默认 DSH_HOME 模式改为 per-vault**（会话按库隔离、配置全局共享）；设置页下拉默认项与 README 同步 |
 | 2026-08-19 | README 精简重构：开箱即用安装（复制 3 文件，无需构建）置顶，构建路线并入「开发者」一节；本地 `dist/obsidian-dsh-dock.zip` 重新打包为最新产物（发布用，不入库） |
 | 2026-08-19 | 「与 dsh-tool-obsidian-vault 联动」扩写为「珠联璧合」章节（配合机制表格 + 三步启用），与工具侧 README 双向印证 |
