@@ -118,13 +118,40 @@ per-vault 模式（`dshHomeMode: per-vault`，DSH_HOME = `~/.dsh/vaults/<库名>
 
 | 日期 | 重要更新 |
 |---|---|
+| 2026-08-19 | 「与 dsh-tool-obsidian-vault 联动」扩写为「珠联璧合」章节：配合机制表格（env 注入 / cwd / preset 软链 / 配置共享）+ 三步启用，与工具侧 README 双向印证；安装方式改为 preset 复制为主 |
 | 2026-08-17 | per-vault 配置共享（模型/密钥/主题配一次全库生效）；`cordis.patch.yml` 语法修正；profiles / .agent-presets 软链共享；`DSH_OBSIDIAN_VAULT_PATH` env 注入；spawn `cwd = vaultRoot` 消除跨库串扰 |
 
-## 与 dsh-tool-obsidian-vault 联动
+## 与 dsh-tool-obsidian-vault 珠联璧合
 
-`dsh-tool-obsidian-vault`（官方 dsh-tools 风格的工具插件）负责在 DSH 内部操作 Obsidian vault
-（通过 `obsidian.json` 全局注册表发现 vault）。它跑在 **DSH 侧**（不是 Obsidian 侧）：
-DSH Web 起来后，在 profile 中安装该工具即可在对话中调用。安装方式（DSH 的插件管理）：
+[`dsh-tool-obsidian-vault`](https://github.com/Elervi/dsh-tool-obsidian-vault) 是 **DSH 侧**的工具插件
+（16 个 `vault_*` 工具，通过 `obsidian.json` 全局注册表发现 vault），本插件跑在 **Obsidian 侧**。
+两者一个管"门"（让 DSH 住进 Obsidian）、一个管"钥匙"（让 Agent 认识 Obsidian），合起来就是
+开箱即用的「Obsidian 内 Agent 笔记工作流」：
+
+| 环节 | 本插件（Obsidian 侧） | 工具侧如何受益（DSH 侧） |
+| --- | --- | --- |
+| 启动 DSH | 点一下机器人图标，面板里就是官方 DSH Web UI | 无需自己开终端跑 `dsh web` |
+| 定位当前库 | per-vault 模式注入 `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` | 「注入的本库」在工具解析顺序里优先于工作目录巧合，多库同开不串 |
+| 会话工作目录 | per-vault spawn `cwd = vaultRoot` | 会话 cwd 即库根，工具解析顺序直接命中，`vault_current` 判定依据清晰 |
+| 多库并行 | 端口按库 hash 偏移互不冲突 | 每个库的面板共享同一份 preset，工具一次装好全库可用 |
+| preset 发现 | `.agent-presets/` 软链 → 共享 `~/.dsh/.agent-presets` | `obsidian` preset 一次安装，per-vault 各面板都能发现 |
+| 配置共享 | `cordis.patch.yml` 把模型/密钥/主题指回 `~/.dsh` | 配一次全库生效，只有会话/历史按库隔离 |
+
+**三步启用即珠联璧合**：
+
+1. 按上文安装并启用本插件（DSH Dock）；
+2. 在 DSH 侧安装工具的 **Obsidian 模式** preset（复制 `preset/` 目录到
+   `~/.dsh/.agent-presets/obsidian`，见工具 README「🚀 快速安装」）；
+3. 点 dock 的机器人图标打开面板 → 新建会话选「Obsidian 模式」→ 直接说
+   "读一下今天的笔记"、"把这段整理进 [[xxx]]"，Agent 会自动定位当前库读写，
+   无需任何路径配置。
+
+> 配套说明：只有 DSH_HOME 模式为 **per-vault** 时才注入
+> `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` 并把 cwd 设为库根；
+> **shared** 模式下多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。
+> 双向印证见 dsh-tool-obsidian-vault 的 README「🤝 与 obsidian-dsh-dock 珠联璧合」一节。
+
+工具侧的另一种安装方式（DSH 的插件管理，备选）：
 
 ```bash
 dsh plugin --profile web add <dsh-tool-obsidian-vault 或其 npm 名>
