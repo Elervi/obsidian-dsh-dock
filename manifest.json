@@ -3,7 +3,7 @@
   "name": "DSH Dock",
   "version": "0.2.0",
   "minAppVersion": "1.5.0",
-  "description": "Dock the official DeepSeek Harness Web (127.0.0.1:3080) into an Obsidian sidebar panel. Runs the official dsh CLI with per-vault isolated sessions.",
+  "description": "Dock the official DeepSeek Harness Web (127.0.0.1:3080) into a sidebar panel. Runs the official dsh CLI with per-vault isolated sessions.",
   "author": "Elervi",
   "isDesktopOnly": true
 }
