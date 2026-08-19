@@ -7,17 +7,8 @@
 > 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏——跑官方 `dsh CLI`、官方 UI 原样嵌入，只做外壳。
 > Dock the official DeepSeek Harness Web into an Obsidian sidebar: spawn the official `dsh` CLI and embed the official UI as-is.
 
-<div class="rt-tabs">
-
-<input class="rt-radio" type="radio" id="rt-zh" name="rt-lang" checked>
-<input class="rt-radio" type="radio" id="rt-en" name="rt-lang">
-
-<div class="rt-nav">
-<label class="rt-tab" for="rt-zh">🇨🇳 中文</label>
-<label class="rt-tab" for="rt-en">🇬🇧 English</label>
-</div>
-
-<div class="rt-panel rt-panel-zh">
+<details open>
+<summary style="font-weight:600;cursor:pointer;margin:.5rem 0">🇨🇳 中文</summary>
 
 ## ✨ 特性
 
@@ -88,9 +79,10 @@ node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>   env: DSH_HOME
 
 > 仅 **per-vault** 模式（默认）注入 env 并设 cwd 为库根；**shared** 模式多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。
 
-</div>
+</details>
 
-<div class="rt-panel rt-panel-en">
+<details>
+<summary style="font-weight:600;cursor:pointer;margin:.5rem 0">🇬🇧 English</summary>
 
 ## ✨ Features
 
@@ -161,20 +153,7 @@ existing DSH service on the port → attach directly, no second spawn
 
 > Only **per-vault** mode (default) injects env vars and sets cwd to the vault root; **shared** mode shares one service across vaults and the tool falls back to "most recently opened vault / working directory".
 
-</div>
-
-</div>
-
-<style>
-.rt-tabs .rt-radio{position:absolute;opacity:0;pointer-events:none}
-.rt-tabs .rt-panel{display:none;padding-top:.5rem}
-.rt-tabs .rt-nav{border-bottom:1px solid #d0d7de;margin-bottom:1rem}
-.rt-tabs .rt-tab{display:inline-block;padding:.4rem .9rem;cursor:pointer;font-weight:600;color:#57606a;border-bottom:2px solid transparent;margin-bottom:-1px}
-.rt-tabs #rt-zh:checked ~ .rt-nav .rt-tab[for="rt-zh"],
-.rt-tabs #rt-en:checked ~ .rt-nav .rt-tab[for="rt-en"]{color:#0969da;border-bottom-color:#0969da}
-.rt-tabs #rt-zh:checked ~ .rt-panel-zh,
-.rt-tabs #rt-en:checked ~ .rt-panel-en{display:block}
-</style>
+</details>
 
 ## License
 
