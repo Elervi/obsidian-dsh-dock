@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            main.js
+            manifest.json
+            styles.css
+
+  smoke:
+    # 端到端冒烟：spawn 官方 dsh web 并验证就绪/服务/停止。
+    # 需要全局 dsh CLI（CI 里安装），首次启动 profile 最长等 120s。
+    runs-on: ubuntu-latest
+    needs: build-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Install dsh CLI
+        run: npm install -g @deepseek-ai/dsh
+
+      - name: Smoke test
+        run: npm run smoke
