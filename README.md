@@ -1,6 +1,5 @@
-已发布到obsidian插件市场
 # DSH Dock（V0.2）
-
+已发布到obsidian插件市场
 > Dock the official **DeepSeek Harness Web** (127.0.0.1:3080) into an Obsidian
 > sidebar panel. Native official: runs the official `dsh` CLI and embeds the
 > official UI as-is. Requires Obsidian desktop 1.5.0+ and the official `dsh` CLI
