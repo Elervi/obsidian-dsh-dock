@@ -3,7 +3,9 @@
 > Dock the official **DeepSeek Harness Web** (127.0.0.1:3080) into an Obsidian
 > sidebar panel. Native official: runs the official `dsh` CLI and embeds the
 > official UI as-is. Requires Obsidian desktop 1.5.0+ and the official `dsh` CLI
-> (`npm i -g @deepseek-ai/dsh`).
+> (`npm i -g @deepseek-ai/dsh`). Pairs with
+> [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)
+> for an agent-driven note workflow.
 
 > 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏面板。
 > 官方原生：直接运行官方 `dsh CLI`，官方 UI 原样嵌入，只美化插件外壳。

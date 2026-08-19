@@ -58,6 +58,10 @@ export class DshDockSettingsTab extends PluginSettingTab {
       cls: 'dsh-dock-settings-desc',
       text: '把官方 DeepSeek Harness Web 停靠进 Obsidian：定位 dsh → 子进程运行 → 面板嵌入。官方原生，官方 UI 原样嵌入。',
     })
+    containerEl.createEl('p', {
+      cls: 'dsh-dock-settings-desc',
+      text: '🤝 与 dsh-tool-obsidian-vault 珠联璧合：配合 DSH 侧的 16 个 vault_* 工具，开箱即用「Obsidian 内 Agent 笔记工作流」——面板里直接说"读一下今天的笔记"，Agent 自动定位当前库读写。',
+    })
 
     // ---------- 服务控制 ----------
     new Setting(containerEl).setName('服务').setHeading()
