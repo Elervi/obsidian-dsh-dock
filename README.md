@@ -10,6 +10,55 @@
 > 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏面板。
 > 官方原生：直接运行官方 `dsh CLI`，官方 UI 原样嵌入，只美化插件外壳。
 
+## About
+
+DSH Dock docks the official DeepSeek Harness Web UI (served by the official
+`dsh` CLI at 127.0.0.1:3080) into an Obsidian sidebar panel. It is a thin
+shell around the official tooling: the plugin locates the installed `dsh`
+binary, spawns the official `dsh web` server, and embeds the official UI in an
+iframe — no reimplementation, no modification of the official interface.
+
+### Features
+
+- **Zero-build install** — copy 3 files (`main.js`, `manifest.json`,
+  `styles.css`) into `.obsidian/plugins/dsh-dock/` and enable the plugin.
+- **Native official** — runs the official `dsh` CLI and embeds the official
+  UI as-is.
+- **Per-vault isolation (default)** — each vault gets its own DSH_HOME and
+  its own derived port, so sessions never leak across vaults, while model,
+  credentials and theme config stay shared (`~/.dsh`).
+- **Pairs with dsh-tool-obsidian-vault** — together they enable an
+  agent-driven note workflow directly inside Obsidian.
+
+### Install
+
+Prerequisites: Obsidian desktop 1.5.0+, the official `dsh` CLI
+(`npm i -g @deepseek-ai/dsh`), and Node.js 20+.
+
+1. Copy `main.js`, `manifest.json` and `styles.css` from the repo root to
+   `.obsidian/plugins/dsh-dock/`.
+2. In Obsidian, go to Settings → Community plugins and enable **DSH Dock**.
+3. Click the robot icon in the sidebar (or run the "Open DSH panel" command).
+
+On first start the plugin initializes `$DSH_HOME` (per-vault isolation by
+default) and spawns the official `dsh web`; the panel appears in a few
+seconds.
+
+### Companion tool
+
+[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)
+is the DSH-side tool plugin that pairs with this one: it exposes 16
+`vault_*` tools (search, read, create, edit, rename, backlinks, frontmatter
+and more) plus a self-contained agent preset. With both installed you can say
+"read today's notes" in the DSH panel and the agent will locate and operate
+on the current vault automatically.
+
+### License
+
+MIT
+
+---
+
 ## ✨ 特性
 
 - 📦 **开箱即用** — 无需构建，复制仓库根 3 个文件即装

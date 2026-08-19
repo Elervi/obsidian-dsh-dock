@@ -269,7 +269,7 @@ export async function waitForReady(host: string, port: number, timeoutMs = 120_0
   for (;;) {
     if (await isPortUp(host, port, 1500)) return true
     if (Date.now() > deadline) return false
-    await new Promise((r) => globalThis.setTimeout(r, 500))
+    await new Promise((r) => window.setTimeout(r, 500))
   }
 }
 
@@ -494,7 +494,7 @@ function summarizeChildError(stderrTail: string): string {
 export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5000): Promise<void> {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve()
   return new Promise((resolve) => {
-    const timer = globalThis.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       try {
         proc.kill('SIGKILL')
       } catch {
@@ -502,13 +502,13 @@ export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5
       }
     }, timeoutMs)
     proc.once('exit', () => {
-      globalThis.clearTimeout(timer)
+      window.clearTimeout(timer)
       resolve()
     })
     try {
       proc.kill('SIGTERM')
     } catch {
-      globalThis.clearTimeout(timer)
+      window.clearTimeout(timer)
       resolve()
     }
   })

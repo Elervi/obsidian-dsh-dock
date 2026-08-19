@@ -1,9 +1,9 @@
 {
   "id": "dsh-dock",
   "name": "DSH Dock",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "minAppVersion": "1.5.0",
-  "description": "Dock the official DeepSeek Harness Web (127.0.0.1:3080) into a sidebar panel. Runs the official dsh CLI with per-vault isolated sessions. Pairs with dsh-tool-obsidian-vault for agent-driven note workflows.",
+  "description": "Dock the official DeepSeek Harness Web (127.0.0.1:3080) into a sidebar panel. Runs the official dsh CLI with per-vault isolated sessions. Pairs with a companion DSH tool plugin for agent-driven note workflows.",
   "author": "Elervi",
   "isDesktopOnly": true
 }

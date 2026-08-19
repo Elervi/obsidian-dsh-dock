@@ -16,6 +16,11 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
+
+// launcher.cjs 的 timer 使用 window.setTimeout（Obsidian 弹窗兼容要求）；
+// Node 环境下补 window shim，保证 smoke 可运行。
+globalThis.window = { setTimeout, clearTimeout }
+
 const { resolveDshBin, launchDsh, waitForReady, stopProcess, isPortUp } = require('../lib/launcher.cjs')
 
 const port = 3099

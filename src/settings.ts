@@ -53,7 +53,6 @@ export class DshDockSettingsTab extends PluginSettingTab {
     containerEl.empty()
 
     // ---------- 概览 ----------
-    new Setting(containerEl).setName('⛵ DSH Dock').setHeading()
     containerEl.createEl('p', {
       cls: 'dsh-dock-settings-desc',
       text: '把官方 DeepSeek Harness Web 停靠进 Obsidian：定位 dsh → 子进程运行 → 面板嵌入。官方原生，官方 UI 原样嵌入。',
