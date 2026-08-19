@@ -1,3 +1,4 @@
+已发布到obsidian插件市场
 # DSH Dock（V0.2）
 
 > Dock the official **DeepSeek Harness Web** (127.0.0.1:3080) into an Obsidian
