@@ -16,6 +16,8 @@ export class DshWebView extends ItemView {
   private iframeEl: HTMLIFrameElement | null = null
   private pillEl: HTMLElement | null = null
   private overlayEl: HTMLElement | null = null
+  /** 面板内"启动/停止"按钮（0.2.5 同款，内容区可见） */
+  private toggleBtn: HTMLButtonElement | null = null
   /** 标题栏"启动/停止"动作按钮（addAction 返回的元素，图标随状态切换） */
   private toggleActionEl: HTMLElement | null = null
   private current: UiState = 'stopped'
@@ -42,7 +44,9 @@ export class DshWebView extends ItemView {
   override async onOpen(): Promise<void> {
     const root = this.contentEl.createDiv({ cls: 'dsh-dock' })
 
-    // ---- 头部：仅保留 logo + 标题 + 状态 pill（动作全部走标题栏/右键菜单） ----
+    // ---- 头部：logo + 标题 + 状态 pill + 面板内控制按钮 ----
+    // 按钮行保留在面板内容里（0.2.5 同款，任何 Obsidian 版本/主题下都可见）；
+    // 同时保留原生标题栏动作（addAction，popout 窗口里唯一的位置）与右键菜单。
     const header = root.createDiv({ cls: 'dsh-dock-header' })
     const logo = header.createDiv({ cls: 'dsh-dock-logo' })
     setIcon(logo, 'anchor')
@@ -50,8 +54,30 @@ export class DshWebView extends ItemView {
     this.pillEl = header.createSpan({ cls: 'dsh-dock-pill' })
     header.createDiv({ cls: 'dsh-dock-spacer' })
 
-    // D5：工具栏动作进 Obsidian 原生标题栏（ItemView.addAction, obsidian.d.ts:3604），
-    // 多面板自动获得；addAction 返回按钮元素，启动/停止图标随状态切换。
+    this.toggleBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
+    this.toggleBtn.onclick = () => void this.onToggle()
+
+    const refreshBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
+    setIcon(refreshBtn, 'refresh-cw')
+    refreshBtn.title = '刷新'
+    refreshBtn.onclick = () => this.reload()
+
+    const popoutBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
+    setIcon(popoutBtn, 'maximize-2')
+    popoutBtn.title = '弹出独立窗口（独立进程，性能等同浏览器）'
+    popoutBtn.onclick = () => {
+      void this.plugin.openPopout()
+    }
+
+    const browserBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
+    setIcon(browserBtn, 'external-link')
+    browserBtn.title = '在系统浏览器中打开'
+    browserBtn.onclick = () => {
+      void this.plugin.openInBrowser()
+    }
+
+    // D5：工具栏动作同步进 Obsidian 原生标题栏（ItemView.addAction, obsidian.d.ts:3604）
+    // 与右键菜单 —— popout 窗口、多面板场景下都有入口。
     this.toggleActionEl = this.addAction('play', '启动', () => void this.onToggle())
     this.addAction('refresh-cw', '刷新', () => this.reload())
     this.addAction('maximize-2', '弹出独立窗口（独立进程，性能等同浏览器）', () => void this.plugin.openPopout())
@@ -145,12 +171,18 @@ export class DshWebView extends ItemView {
     }
 
     this.current = ui
+    const running = s.kind === 'running' || s.kind === 'starting'
     if (this.pillEl) {
       this.pillEl.setText(pillText)
       this.pillEl.className = `dsh-dock-pill ${pillCls}`
     }
+    // 面板内按钮图标随状态切换（0.2.5 同款）
+    if (this.toggleBtn) {
+      this.toggleBtn.empty()
+      setIcon(this.toggleBtn, running ? 'square' : 'play')
+      this.toggleBtn.title = running ? '停止' : '启动'
+    }
     // 标题栏动作按钮图标随状态切换（addAction 返回的元素可被 setIcon 重绘）
-    const running = s.kind === 'running' || s.kind === 'starting'
     if (this.toggleActionEl) {
       this.toggleActionEl.empty()
       setIcon(this.toggleActionEl, running ? 'square' : 'play')
