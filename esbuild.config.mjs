@@ -37,14 +37,28 @@ const launcherOptions = {
   logLevel: 'info',
 }
 
+/** bridgeServer.ts 单独产出 CJS（纯 Node 可测，零 Obsidian 依赖），供 smoke 起假服务验证 */
+const bridgeOptions = {
+  entryPoints: ['src/bridgeServer.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node18',
+  outfile: 'lib/bridgeServer.cjs',
+  logLevel: 'info',
+}
+
 if (watch) {
   const ctx = await esbuild.context(options)
   await ctx.watch()
   const ctx2 = await esbuild.context(launcherOptions)
   await ctx2.watch()
+  const ctx3 = await esbuild.context(bridgeOptions)
+  await ctx3.watch()
   console.log('[dsh-dock] watching...')
 } else {
   await esbuild.build(options)
   await esbuild.build(launcherOptions)
-  console.log('[dsh-dock] build done -> main.js, lib/launcher.cjs')
+  await esbuild.build(bridgeOptions)
+  console.log('[dsh-dock] build done -> main.js, lib/launcher.cjs, lib/bridgeServer.cjs')
 }

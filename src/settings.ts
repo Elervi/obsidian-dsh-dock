@@ -25,6 +25,12 @@ export interface DshDockSettings {
   useEmbeddedNode: boolean
   /** Obsidian 启动时自动拉起 DSH */
   autostart: boolean
+  /**
+   * Obsidian API 桥（B1）：插件加载即在 127.0.0.1 起一个本地 HTTP 桥，
+   * 把 vault/metadataCache/fileManager 的官方解析结果喂给 DSH 侧
+   * dsh-tool-obsidian-vault 工具（桥优先、文件回退）。默认开。
+   */
+  bridgeEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS: DshDockSettings = {
@@ -36,6 +42,7 @@ export const DEFAULT_SETTINGS: DshDockSettings = {
   dshHome: '',
   useEmbeddedNode: false,
   autostart: true,
+  bridgeEnabled: true,
 }
 
 export class DshDockSettingsTab extends PluginSettingTab {
@@ -89,6 +96,27 @@ export class DshDockSettingsTab extends PluginSettingTab {
           await this.plugin.saveSettings()
         }),
       )
+
+    // ---------- Obsidian API 桥 ----------
+    new Setting(containerEl).setName('Obsidian API 桥（B1）').setHeading()
+    new Setting(containerEl)
+      .setName('启用 API 桥')
+      .setDesc(
+        '插件加载即在本机 127.0.0.1 起一个 token 鉴权的 HTTP 桥，把 vault/metadataCache/fileManager 的官方解析结果喂给 DSH 侧 vault_* 工具（桥优先、文件回退）。关闭后工具回退文件直读模式。',
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.bridgeEnabled).onChange(async (v) => {
+          this.plugin.settings.bridgeEnabled = v
+          await this.plugin.saveSettings()
+          if (v) {
+            await this.plugin.startBridge()
+          } else {
+            await this.plugin.stopBridge()
+          }
+          this.bridgeLine.textContent = this.describeBridge()
+        }),
+      )
+    this.bridgeLine = containerEl.createDiv({ cls: 'dsh-dock-detect' })
 
     // ---------- 运行时 ----------
     new Setting(containerEl).setName('运行时').setHeading()
@@ -205,11 +233,13 @@ export class DshDockSettingsTab extends PluginSettingTab {
     this.detectLine.textContent = this.describeDetect()
     this.homePreview.textContent = this.describeDshHome()
     this.netPreview.textContent = this.describeNet()
+    this.bridgeLine.textContent = this.describeBridge()
   }
 
   private detectLine!: HTMLElement
   private homePreview!: HTMLElement
   private netPreview!: HTMLElement
+  private bridgeLine!: HTMLElement
 
   private describeStatus(): string {
     const s = this.plugin.getStatus()
@@ -219,6 +249,12 @@ export class DshDockSettingsTab extends PluginSettingTab {
     if (s.kind === 'starting') return '启动中…（首次约 10 秒，需初始化 profile）'
     if (s.kind === 'error') return `失败: ${s.message}`
     return '未运行'
+  }
+
+  private describeBridge(): string {
+    const url = this.plugin.bridgeUrl
+    if (!this.plugin.settings.bridgeEnabled) return '已关闭（工具回退文件直读模式）'
+    return url ? `运行中: ${url}（token 鉴权，仅本机）` : '未运行（启动失败将回退文件模式）'
   }
 
   private describeDetect(): string {

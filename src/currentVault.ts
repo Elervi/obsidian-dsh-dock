@@ -36,6 +36,13 @@ export interface CurrentVaultMarker {
   path: string
   /** 当前打开的笔记（vault 相对路径）；无打开笔记时不写此字段 */
   activeFile?: string
+  /**
+   * 本窗口 Obsidian API 桥的地址与 token（桥运行时写入）。shared/custom 模式下
+   * dsh web 是共享服务、env 注入只来自拉起窗口，DSH 侧凭标记文件按 vault 路径
+   * 匹配到正确窗口的桥（per-vault 模式 env 已足够，标记文件是第二通道）。
+   */
+  bridgeUrl?: string
+  bridgeToken?: string
   updatedAt: number
 }
 
@@ -43,12 +50,21 @@ export interface CurrentVaultMarker {
  * 原子写入标记文件：先写同目录 .tmp 再 rename，避免 DSH 侧读到半截内容。
  * 失败只告警，不抛。
  */
-export function writeCurrentVaultMarker(name: string, vaultPath: string, activeFile?: string): void {
+export function writeCurrentVaultMarker(
+  name: string,
+  vaultPath: string,
+  activeFile?: string,
+  bridge?: { url: string; token: string },
+): void {
   try {
     const file = currentVaultMarkerPath()
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const payload: CurrentVaultMarker = { name, path: vaultPath, updatedAt: Date.now() }
     if (activeFile) payload.activeFile = activeFile
+    if (bridge) {
+      payload.bridgeUrl = bridge.url
+      payload.bridgeToken = bridge.token
+    }
     const tmp = `${file}.tmp`
     fs.writeFileSync(tmp, JSON.stringify(payload, null, 2))
     fs.renameSync(tmp, file)

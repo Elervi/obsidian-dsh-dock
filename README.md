@@ -13,6 +13,7 @@
 - 📦 **开箱即用** — Obsidian 市场一键安装，或复制 3 个文件
 - 🪟 **官方原生** — 定位 dsh → 拉起官方 `dsh web` → iframe 原样嵌入
 - 🗂️ **Per-vault 隔离** — 会话按库独立、配置全局共享，多库并行互不串扰
+- 🔌 **Obsidian API 桥（B1）** — 插件加载即在本机 127.0.0.1 起一个 token 鉴权的 HTTP 桥，把 `app.vault` / `metadataCache` / `fileManager` 的官方解析结果喂给 DSH 侧 `vault_*` 工具（桥优先、文件回退），工具写后 Obsidian UI 与索引即时刷新
 - 🤝 **珠联璧合** — 与 [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 联动，Obsidian 内直接驱动 Agent 笔记工作流
 - 🧹 **进程自清洁** — 卸载/停用 SIGTERM 关停；崩溃残留的孤儿进程下次启动自动清扫
 
@@ -46,6 +47,7 @@
 | 监听端口 | 3080；`0` = OS 分配空闲端口 |
 | DSH_HOME 模式 | per-vault 隔离（可切换 shared / 自定义） |
 | 随 Obsidian 自动启动 | ✅ 开 |
+| Obsidian API 桥 | ✅ 开（127.0.0.1 回环，token 鉴权，端口 18080+ 独立于 dsh web） |
 
 ## 🔧 原理
 
@@ -53,6 +55,13 @@
 node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>   env: DSH_HOME
 → 等待就绪（秒退立即报错，不盲等）→ iframe 面板 → http://127.0.0.1:<port>/
 端口上已有 DSH 服务 → 直接挂接，不重复拉起
+
+Obsidian API 桥（B1，独立于 dsh web）：
+createBridgeServer(service=ObsidianBridgeService(app)) @ 127.0.0.1:<18080+hash>
+→ /health /v1/{current,notes,note,metadata,frontmatter,backlinks,search,tags,folders}
+→ POST /v1/{write,edit,frontmatter,rename}（Bearer token 鉴权，仅回环）
+→ 桥地址/token 经 DSH_OBSIDIAN_BRIDGE_URL/TOKEN env + current-vault.json 标记文件
+   双通道注入 DSH 进程；工具侧「桥优先、文件回退」
 ```
 
 ## ⚠️ 已知限制
@@ -60,10 +69,12 @@ node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>   env: DSH_HOME
 - 仅桌面端（依赖 `child_process`）
 - 端口被**非 DSH 服务**占用 → 秒退报错；被另一 DSH 占用 → 直接挂接
 - 会话全文搜索需 Node ≥ 22.5
+- 桥的 `vault_rename_note` 遵循 Obsidian「自动更新内部链接」设置（关闭时不改写引用，与 Obsidian UI 行为一致）
+- 桥覆盖 vault / fileManager / metadataCache / workspace 中与笔记工作流相关的全部核心 API；全文搜索无公开 API（桥内实现 substring/regex），附件二进制读写与 `/v1/events` 变更推送未做
 
 ## 🤝 珠联璧合
 
-[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 是 **DSH 侧**工具插件（16 个 `vault_*` 工具，让 Agent 直接读写本地 Obsidian 笔记）；本插件是 **Obsidian 侧**外壳——一个管「门」（让 DSH 住进 Obsidian），一个管「钥匙」（让 Agent 认识 Obsidian）。
+[dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 是 **DSH 侧**工具插件（20 个 `vault_*` 工具，让 Agent 直接读写本地 Obsidian 笔记）；本插件是 **Obsidian 侧**外壳——一个管「门」（让 DSH 住进 Obsidian），一个管「钥匙」（让 Agent 认识 Obsidian）。
 
 | 环节 | 本插件（Obsidian 侧） | 工具侧如何受益（DSH 侧） |
 | --- | --- | --- |

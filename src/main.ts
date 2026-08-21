@@ -8,6 +8,7 @@
 
 import { Plugin, Notice, WorkspaceLeaf, requestUrl, FileSystemAdapter } from 'obsidian'
 import { shell } from 'electron'
+import { randomBytes } from 'crypto'
 import type { ChildProcess } from 'child_process'
 import * as os from 'os'
 import * as path from 'path'
@@ -27,6 +28,24 @@ import {
 import { DshDockSettingsTab, DEFAULT_SETTINGS, type DshDockSettings } from './settings'
 import { DshWebView, DSH_WEB_VIEW_TYPE } from './view'
 import { currentVaultInfo, writeCurrentVaultMarker } from './currentVault'
+import { createBridgeServer, BridgeError, type BridgeServerHandle } from './bridgeServer'
+import { ObsidianBridgeService } from './obsidianService'
+
+/**
+ * Obsidian API 桥端口基准（per-vault 派生，与 dsh web 端口域不相交）：
+ * dsh web 在 settings.port(默认 3080) + hash%4096 → 3080–7175；
+ * 桥在 18080 + hash%4096 → 18080–22175，绝无重叠。
+ */
+export const BRIDGE_PORT_BASE = 18080
+
+/** 计算本 vault 的桥端口（per-vault 哈希派生，与 dsh web 端口各自独立） */
+export function computeBridgePort(vaultRoot: string | undefined): number {
+  if (vaultRoot) {
+    const offset = parseInt(stableHash(`${vaultRoot}:bridge`), 36) % 4096
+    return BRIDGE_PORT_BASE + offset
+  }
+  return BRIDGE_PORT_BASE
+}
 
 /**
  * 计算 DSH_HOME：
@@ -84,6 +103,18 @@ export default class DshDockPlugin extends Plugin {
   private statusListeners = new Set<() => void>()
   /** 标记文件写入防抖 timer（窗口 focus 可能高频触发） */
   private markerTimer: number | null = null
+  /**
+   * Obsidian API 桥（B1）：本窗口的 Obsidian 渲染进程内 HTTP 服务，把
+   * app.vault / metadataCache / fileManager 的官方解析结果暴露给 DSH 侧
+   * 工具插件。token 每次插件加载重新生成，经 env + 标记文件两个通道注入。
+   */
+  private bridge: BridgeServerHandle | null = null
+  private readonly bridgeToken = randomBytes(24).toString('base64url')
+
+  /** 桥的访问地址（运行中才有值） */
+  get bridgeUrl(): string | null {
+    return this.bridge ? `http://${this.settings.host}:${this.bridge.port}` : null
+  }
 
   // ------------------------------------------------------------------ 生命周期
 
@@ -106,6 +137,12 @@ export default class DshDockPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshCurrentVaultMarker()))
     this.registerEvent(this.app.workspace.on('file-open', () => this.refreshCurrentVaultMarker()))
     this.registerEvent(this.app.workspace.on('window-open', () => this.refreshCurrentVaultMarker()))
+
+    // B1：Obsidian API 桥 —— 与 dsh web 服务独立，插件加载即起（不依赖 DSH 启动）。
+    // 桥故障不阻塞插件主流程（工具侧自动回退文件模式），只记日志/提示。
+    if (this.settings.bridgeEnabled) {
+      void this.startBridge()
+    }
 
     this.addRibbonIcon('bot', 'DSH Dock：打开面板', () => void this.openPanel())
     this.addCommand({
@@ -160,6 +197,7 @@ export default class DshDockPlugin extends Plugin {
 
   override onunload(): void {
     void this.stop()
+    void this.stopBridge()
     this.statusListeners.clear()
   }
 
@@ -241,8 +279,48 @@ export default class DshDockPlugin extends Plugin {
     this.markerTimer = window.setTimeout(() => {
       this.markerTimer = null
       const info = currentVaultInfo(this.app)
-      if (info) writeCurrentVaultMarker(info.name, info.path, info.activeFile)
+      if (info) {
+        const bridge = this.bridgeUrl ? { url: this.bridgeUrl, token: this.bridgeToken } : undefined
+        writeCurrentVaultMarker(info.name, info.path, info.activeFile, bridge)
+      }
     }, 300)
+  }
+
+  // ------------------------------------------------------------------ Obsidian API 桥
+
+  /** 启动本窗口的 Obsidian API 桥（127.0.0.1，token 鉴权）；失败静默降级（工具回退文件模式） */
+  async startBridge(): Promise<void> {
+    if (this.bridge) return
+    try {
+      const vaultRoot = this.vaultRoot()
+      const port = computeBridgePort(vaultRoot)
+      const service = new ObsidianBridgeService(this.app, this.manifest.version)
+      this.bridge = await createBridgeServer({
+        host: this.settings.host,
+        port,
+        token: this.bridgeToken,
+        service,
+      })
+      console.info(`[dsh-dock] Obsidian API 桥已启动: http://${this.settings.host}:${this.bridge.port}（vault: ${service.info.name}）`)
+      this.refreshCurrentVaultMarker()
+    } catch (err) {
+      const msg = err instanceof BridgeError || err instanceof Error ? err.message : String(err)
+      console.warn('[dsh-dock] Obsidian API 桥启动失败（工具将回退文件模式）', err)
+      new Notice(`DSH Dock: Obsidian API 桥启动失败（${msg}）。vault_* 工具将回退到文件直读模式`)
+    }
+  }
+
+  /** 停止本窗口的 Obsidian API 桥 */
+  async stopBridge(): Promise<void> {
+    const bridge = this.bridge
+    this.bridge = null
+    if (bridge) {
+      try {
+        await bridge.close()
+      } catch (err) {
+        console.warn('[dsh-dock] 关闭 Obsidian API 桥失败', err)
+      }
+    }
   }
 
   // ------------------------------------------------------------------ 启动 / 停止
@@ -283,12 +361,22 @@ export default class DshDockPlugin extends Plugin {
         // per-vault 模式：注入本服务所属库 env（第二通道）。工具插件解析时
         // 优先用本 env 识别"本服务服务的库"，cwd 保持 dsh 进程默认工作目录
         // 不变 —— cwd 与 Obsidian 库是两个独立概念，不合并。
-        env: sharedConfigRoot && vaultInfo
-          ? {
-              DSH_OBSIDIAN_VAULT_NAME: vaultInfo.name,
-              DSH_OBSIDIAN_VAULT_PATH: vaultInfo.path,
-            }
-          : {},
+        // B1：桥地址/token 与 vault 注入同通道（shared/custom 模式也注入，
+        // 供工具侧桥优先解析；无桥时不注入，工具回退文件模式）。
+        env: {
+          ...(sharedConfigRoot && vaultInfo
+            ? {
+                DSH_OBSIDIAN_VAULT_NAME: vaultInfo.name,
+                DSH_OBSIDIAN_VAULT_PATH: vaultInfo.path,
+              }
+            : {}),
+          ...(this.bridgeUrl
+            ? {
+                DSH_OBSIDIAN_BRIDGE_URL: this.bridgeUrl,
+                DSH_OBSIDIAN_BRIDGE_TOKEN: this.bridgeToken,
+              }
+            : {}),
+        },
       })
       this.proc = result.proc ?? null
       if (result.status.kind === 'running' && result.proc && !result.status.attached) {
