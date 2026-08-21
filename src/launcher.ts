@@ -409,7 +409,10 @@ ${insertion.trimEnd()}
 export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: string; useElectronAsNode: boolean }): ChildProcess {
   const port = opts.port ?? 3080
   const host = opts.host ?? '127.0.0.1'
-  const args = [opts.dshBin, 'web', '--host', host, '--port', String(port)]
+  // --no-open：dsh CLI 默认会打开系统默认浏览器（面板场景下是"劫持"）。
+  // 插件侧的面板就是 UI；需要浏览器时走显式的"在系统浏览器中打开"
+  // 动作（shell.openExternal）。
+  const args = [opts.dshBin, 'web', '--host', host, '--port', String(port), '--no-open']
   const env: NodeJS.ProcessEnv = {
     ...(opts.env ?? process.env ?? {}),
     DSH_HOME: opts.dshHome,
