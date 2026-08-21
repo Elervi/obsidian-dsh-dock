@@ -6,7 +6,7 @@
  * 卸载: SIGTERM 子进程。
  */
 
-import { Plugin, Notice, WorkspaceLeaf } from 'obsidian'
+import { Plugin, Notice, WorkspaceLeaf, requestUrl, FileSystemAdapter } from 'obsidian'
 import { shell } from 'electron'
 import type { ChildProcess } from 'child_process'
 import * as os from 'os'
@@ -92,16 +92,20 @@ export default class DshDockPlugin extends Plugin {
 
     this.registerView(DSH_WEB_VIEW_TYPE, (leaf) => new DshWebView(leaf, this))
 
-    // 把"当前焦点 vault"跨进程告诉 DSH 侧：本窗口打开（onload）与每次获得
-    // 焦点时刷新标记文件。多窗口场景下每个窗口都独立加载本插件，最后获得
-    // 焦点的窗口写入，即"用户当前正在看的 vault"。
+    // 把"当前焦点 vault + 当前笔记"跨进程告诉 DSH 侧：本窗口打开（onload）与
+    // 每次获得焦点时刷新标记文件。多窗口场景下每个窗口都独立加载本插件，
+    // 最后获得焦点的窗口写入，即"用户当前正在看的 vault"。
     this.refreshCurrentVaultMarker()
-    const onWindowFocus = () => this.refreshCurrentVaultMarker()
-    window.addEventListener('focus', onWindowFocus)
-    this.register(() => window.removeEventListener('focus', onWindowFocus))
-    // 补充信号：用户在窗口内切换文件/布局必然触发 active-leaf-change，
-    // 覆盖 window focus 事件不派发的场景。防抖共用一个 timer，互不干扰。
+    // D2：registerDomEvent 取代手工 addEventListener + register()，
+    // 类型安全、卸载自动清理（Component.registerDomEvent, obsidian.d.ts:1892）。
+    this.registerDomEvent(window, 'focus', () => this.refreshCurrentVaultMarker())
+    // 补充信号：光标切换文件（file-open）、新窗口/弹窗打开（window-open）、
+    // 布局/活动叶子变化（active-leaf-change）都刷一次 —— 覆盖 window focus
+    // 不派发的场景；防抖共用一个 timer，互不干扰。事件版本门槛：
+    // active-leaf-change/file-open 0.10.9+，window-open 0.15.3+，均 ≤ minAppVersion。
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.refreshCurrentVaultMarker()))
+    this.registerEvent(this.app.workspace.on('file-open', () => this.refreshCurrentVaultMarker()))
+    this.registerEvent(this.app.workspace.on('window-open', () => this.refreshCurrentVaultMarker()))
 
     this.addRibbonIcon('bot', 'DSH Dock：打开面板', () => void this.openPanel())
     this.addCommand({
@@ -125,6 +129,24 @@ export default class DshDockPlugin extends Plugin {
       callback: () => void this.openInBrowser(),
     })
 
+    // D6：注册 obsidian://dsh-dock 协议入口（Plugin.registerObsidianProtocolHandler,
+    // obsidian.d.ts:5028）。DSH Web 侧/外部自动化可用
+    // `obsidian://dsh-dock?action=open` 一键唤起面板 —— 配合品牌校验，
+    // 「从浏览器回到 Obsidian」闭环。
+    this.registerObsidianProtocolHandler('dsh-dock', (data) => {
+      if (data.action === 'open') void this.openPanel()
+    })
+
+    // D7：退出前 flush。`workspace.on('quit')`（0.10.2+，Obsidian 尽力调用，
+    // 不保证执行）里 await 停服务 + 落盘标记，补上 onunload 里
+    // `void this.stop()` 不等结果的缺口（强退时 PID 文件/标记文件可能没落盘）。
+    this.registerEvent(
+      this.app.workspace.on('quit', async () => {
+        await this.stop()
+        this.refreshCurrentVaultMarker()
+      }),
+    )
+
     this.statusBarEl = this.addStatusBarItem()
     this.renderStatusBar()
     this.addSettingTab(new DshDockSettingsTab(this.app, this))
@@ -139,6 +161,15 @@ export default class DshDockPlugin extends Plugin {
   override onunload(): void {
     void this.stop()
     this.statusListeners.clear()
+  }
+
+  /**
+   * D7：首次"用户手动启用"时只跑一次的钩子（Plugin.onUserEnable,
+   * obsidian.d.ts:5073，Obsidian 1.7.2+ 调用；旧版本忽略该钩子，插件照常工作，
+   * 因此无需抬 minAppVersion）。只做引导提示，不做任何初始化。
+   */
+  override onUserEnable(): void {
+    new Notice('DSH Dock 已启用：点击左侧栏机器人图标打开 DSH 面板，或执行 obsidian://dsh-dock?action=open')
   }
 
   // ------------------------------------------------------------------ 状态
@@ -157,9 +188,10 @@ export default class DshDockPlugin extends Plugin {
     return `http://${this.settings.host}:${port}/`
   }
 
-  /** 当前 vault 根目录（无则 undefined） */
+  /** 当前 vault 根目录（无则 undefined）。D1：instanceof 取代强转，类型安全 */
   private vaultRoot(): string | undefined {
-    return (this.app.vault.adapter as { getBasePath?: () => string }).getBasePath?.()
+    const adapter = this.app.vault.adapter
+    return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : undefined
   }
 
   onStatusChange(fn: () => void): () => void {
@@ -203,13 +235,13 @@ export default class DshDockPlugin extends Plugin {
 
   // ------------------------------------------------------------------ 当前 vault 标记
 
-  /** 读取当前 vault 并写标记文件（防抖 300ms，避免 focus 高频触发反复写盘） */
+  /** 读取当前 vault（含当前打开的笔记）并写标记文件（防抖 300ms，避免 focus 高频触发反复写盘） */
   refreshCurrentVaultMarker(): void {
     if (this.markerTimer) window.clearTimeout(this.markerTimer)
     this.markerTimer = window.setTimeout(() => {
       this.markerTimer = null
       const info = currentVaultInfo(this.app)
-      if (info) writeCurrentVaultMarker(info.name, info.path)
+      if (info) writeCurrentVaultMarker(info.name, info.path, info.activeFile)
     }, 300)
   }
 
@@ -242,6 +274,12 @@ export default class DshDockPlugin extends Plugin {
         // per-vault 配置共享：模型/密钥/主题指回共享 ~/.dsh，只隔离会话。
         ...(sharedConfigRoot ? { sharedConfigRoot } : {}),
         useEmbeddedNode: this.settings.useEmbeddedNode,
+        // D3：端口已有服务时做品牌特征校验 —— 是 dsh web 才挂接，否则按
+        // 「端口被非 DSH 服务占用」报错，把"误挂非 DSH 服务"从偶发变成不可能。
+        // requestUrl 是 Obsidian 官方 CSP 豁免的 HTTP 助手（obsidian.d.ts:5442），
+        // RequestUrlParam 没有 timeout 字段，所以 1.5s 快速存活探测仍走
+        // node:http（launcher.ts isPortUp），这里只做慢速响应体特征校验。
+        verifyBrand: (url) => this.verifyDshBrand(url),
         // per-vault 模式：注入本服务所属库 env（第二通道）。工具插件解析时
         // 优先用本 env 识别"本服务服务的库"，cwd 保持 dsh 进程默认工作目录
         // 不变 —— cwd 与 Obsidian 库是两个独立概念，不合并。
@@ -284,6 +322,21 @@ export default class DshDockPlugin extends Plugin {
     }
     removeDshPidFile(computeDshHome(this.settings, this.vaultRoot()))
     this.setStatus({ kind: 'stopped' })
+  }
+
+  /**
+   * D3：品牌特征校验 —— GET 服务根路径，响应体含 "DeepSeek Harness"
+   * （官方 dsh web 前端 index.html 的 <title>）才认定是 dsh web。
+   * requestUrl 是渲染进程里 CSP 豁免的官方 HTTP 助手（obsidian.d.ts:5442）；
+   * throw: false 让 4xx/5xx 也走正常返回路径，统一按特征判断。
+   */
+  private async verifyDshBrand(url: string): Promise<boolean> {
+    try {
+      const resp = await requestUrl({ url, method: 'GET', throw: false })
+      return resp.status === 200 && resp.text.includes('DeepSeek Harness')
+    } catch {
+      return false
+    }
   }
 
   private hookChildLogs(proc: ChildProcess): void {
@@ -354,6 +407,10 @@ export default class DshDockPlugin extends Plugin {
     const leaves = workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE)
     let leaf: WorkspaceLeaf | null = leaves[0] ?? null
     if (!leaf) {
+      // D8：getRightLeaf(false) 在 1.13.x 的 d.ts 与官方 docs 中均无
+      // @deprecated 标记（检测报告 §5.1），语义即"右侧栏叶子"，可继续用；
+      // ensureSideLeaf 需 Obsidian 1.7.2+，而 minAppVersion 保持 1.5.0，
+      // 不引入额外版本门槛。
       leaf = workspace.getRightLeaf(false)
       if (!leaf) return
       await leaf.setViewState({ type: DSH_WEB_VIEW_TYPE, active: true })

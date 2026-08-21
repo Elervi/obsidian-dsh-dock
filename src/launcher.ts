@@ -70,6 +70,13 @@ export interface LaunchOptions {
    * 靠焦点标记跟随）。
    */
   cwd?: string
+  /**
+   * 端口已有服务时的"品牌特征校验"（由插件侧注入，launcher 保持零
+   * Obsidian 依赖）：返回 true 才挂接已有服务；返回 false 按「端口被非
+   * DSH 服务占用」报错，避免把别的服务误当成 dsh web。不传 = 跳过校验
+   * （旧行为，端口有服务即挂接）。
+   */
+  verifyBrand?: (url: string) => Promise<boolean>
 }
 
 export interface ResolvedNode {
@@ -417,8 +424,39 @@ export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: strin
 }
 
 /**
+ * 端口已有服务时决定"挂接 or 报错"：
+ * - 未注入 verifyBrand：直接挂接（旧行为）；
+ * - 注入且校验通过：挂接；
+ * - 注入但校验失败/异常：按「端口被非 DSH 服务占用」返回 error。
+ */
+async function attachStatus(
+  opts: LaunchOptions,
+  host: string,
+  port: number,
+  url: string,
+): Promise<ServerStatus> {
+  if (!opts.verifyBrand) {
+    return { kind: 'running', port, host, url, attached: true }
+  }
+  let isBrand = false
+  try {
+    isBrand = await opts.verifyBrand(url)
+  } catch {
+    isBrand = false
+  }
+  if (isBrand) {
+    return { kind: 'running', port, host, url, attached: true }
+  }
+  return {
+    kind: 'error',
+    message: `端口 ${port} 已被非 DSH 服务占用（品牌特征校验未通过）。请换一个端口，或先停掉占用该端口的服务`,
+  }
+}
+
+/**
  * 一键"确保运行"：
- * 1. 端口已有服务 → 直接挂接（attached，不新起进程）；
+ * 1. 端口已有服务 → 品牌校验（可选）→ 通过则挂接（attached，不新起进程），
+ *    否则按「端口被非 DSH 服务占用」报错，绝不误挂；
  * 2. 否则定位 dsh → 选择 Node → spawn → 等待就绪；
  * 3. 子进程秒退（如端口被占 EADDRINUSE）→ 立即返回真实错误，不再盲等。
  * 返回 ServerStatus。
@@ -429,7 +467,7 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
   const url = `http://${host}:${port}/`
 
   if (await isPortUp(host, port)) {
-    return { status: { kind: 'running', port, host, url, attached: true } }
+    return { status: await attachStatus(opts, host, port, url) }
   }
 
   const found = resolveDshBin(opts.dshBin)
@@ -470,7 +508,7 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
 
   // 子进程已退出：再探一次端口（可能被别的实例抢跑绑定），否则给出真实错误
   if (await isPortUp(host, port)) {
-    return { status: { kind: 'running', port, host, url, attached: true }, proc }
+    return { status: await attachStatus(opts, host, port, url), proc }
   }
   return { status: { kind: 'error', message: summarizeChildError(stderrTail) }, proc }
 }

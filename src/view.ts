@@ -1,10 +1,11 @@
 /**
  * DshWebView —— 把官方 DSH Web (127.0.0.1:<port>) 停靠进 Obsidian 面板。
- * 带完整过程状态：加载动画 / 错误卡片（含重试）/ 未启动空状态 / 图标工具栏。
- * iframe 指向官方服务，UI 只是"船坞"外壳。
+ * 带完整过程状态：加载动画 / 错误卡片（含重试）/ 未启动空状态。
+ * iframe 指向官方服务，UI 只是"船坞"外壳；工具栏动作走 Obsidian 原生
+ * 标题栏（ItemView.addAction）与右键菜单（onPaneMenu）。
  */
 
-import { ItemView, WorkspaceLeaf, setIcon } from 'obsidian'
+import { ItemView, WorkspaceLeaf, setIcon, type Menu } from 'obsidian'
 import type DshDockPlugin from './main'
 
 export const DSH_WEB_VIEW_TYPE = 'dsh-dock-web'
@@ -15,7 +16,8 @@ export class DshWebView extends ItemView {
   private iframeEl: HTMLIFrameElement | null = null
   private pillEl: HTMLElement | null = null
   private overlayEl: HTMLElement | null = null
-  private toggleBtn: HTMLButtonElement | null = null
+  /** 标题栏"启动/停止"动作按钮（addAction 返回的元素，图标随状态切换） */
+  private toggleActionEl: HTMLElement | null = null
   private current: UiState = 'stopped'
 
   constructor(
@@ -40,7 +42,7 @@ export class DshWebView extends ItemView {
   override async onOpen(): Promise<void> {
     const root = this.contentEl.createDiv({ cls: 'dsh-dock' })
 
-    // ---- 头部工具栏 ----
+    // ---- 头部：仅保留 logo + 标题 + 状态 pill（动作全部走标题栏/右键菜单） ----
     const header = root.createDiv({ cls: 'dsh-dock-header' })
     const logo = header.createDiv({ cls: 'dsh-dock-logo' })
     setIcon(logo, 'anchor')
@@ -48,31 +50,22 @@ export class DshWebView extends ItemView {
     this.pillEl = header.createSpan({ cls: 'dsh-dock-pill' })
     header.createDiv({ cls: 'dsh-dock-spacer' })
 
-    this.toggleBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
-    this.toggleBtn.onclick = () => void this.onToggle()
-
-    const refreshBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
-    setIcon(refreshBtn, 'refresh-cw')
-    refreshBtn.title = '刷新'
-    refreshBtn.onclick = () => this.reload()
-
-    const popoutBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
-    setIcon(popoutBtn, 'maximize-2')
-    popoutBtn.title = '弹出独立窗口（独立进程，性能等同浏览器）'
-    popoutBtn.onclick = () => {
-      void this.plugin.openPopout()
-    }
-
-    const browserBtn = header.createEl('button', { cls: 'dsh-dock-btn' })
-    setIcon(browserBtn, 'external-link')
-    browserBtn.title = '在系统浏览器中打开'
-    browserBtn.onclick = () => {
-      void this.plugin.openInBrowser()
-    }
+    // D5：工具栏动作进 Obsidian 原生标题栏（ItemView.addAction, obsidian.d.ts:3604），
+    // 多面板自动获得；addAction 返回按钮元素，启动/停止图标随状态切换。
+    this.toggleActionEl = this.addAction('play', '启动', () => void this.onToggle())
+    this.addAction('refresh-cw', '刷新', () => this.reload())
+    this.addAction('maximize-2', '弹出独立窗口（独立进程，性能等同浏览器）', () => void this.plugin.openPopout())
+    this.addAction('external-link', '在系统浏览器中打开', () => void this.plugin.openInBrowser())
 
     // ---- 主体：iframe + 状态覆盖层 ----
     const body = root.createDiv({ cls: 'dsh-dock-body' })
-    this.iframeEl = body.createEl('iframe', { cls: 'dsh-dock-frame' })
+    // D4：显式 sandbox 白名单（allow-scripts + allow-same-origin 供 SPA 用
+    // localStorage，allow-forms/modals/popups 覆盖登录/弹窗场景；仅回环可信
+    // 服务，但显式声明是规范要求，Custom Frames 同款）。
+    this.iframeEl = body.createEl('iframe', {
+      cls: 'dsh-dock-frame',
+      attr: { sandbox: 'allow-scripts allow-same-origin allow-forms allow-modals allow-popups' },
+    })
     this.overlayEl = body.createDiv({ cls: 'dsh-dock-overlay' })
 
     // 状态联动
@@ -89,6 +82,23 @@ export class DshWebView extends ItemView {
 
   override onClose(): Promise<void> {
     return Promise.resolve()
+  }
+
+  /** D5：右键菜单（View.onPaneMenu, obsidian.d.ts:7709）——多面板/标签头右键自动获得 */
+  override onPaneMenu(menu: Menu, _source: 'more-options' | 'tab-header' | string): void {
+    menu.addItem((item) =>
+      item
+        .setTitle(this.current === 'running' || this.current === 'starting' ? '停止 DSH 服务' : '启动 DSH 服务')
+        .setIcon(this.current === 'running' || this.current === 'starting' ? 'square' : 'play')
+        .onClick(() => void this.onToggle()),
+    )
+    menu.addItem((item) => item.setTitle('刷新').setIcon('refresh-cw').onClick(() => this.reload()))
+    menu.addItem((item) =>
+      item.setTitle('弹出独立窗口').setIcon('maximize-2').onClick(() => void this.plugin.openPopout()),
+    )
+    menu.addItem((item) =>
+      item.setTitle('在系统浏览器中打开').setIcon('external-link').onClick(() => void this.plugin.openInBrowser()),
+    )
   }
 
   private async onToggle(): Promise<void> {
@@ -139,10 +149,13 @@ export class DshWebView extends ItemView {
       this.pillEl.setText(pillText)
       this.pillEl.className = `dsh-dock-pill ${pillCls}`
     }
-    if (this.toggleBtn) {
-      this.toggleBtn.empty()
-      setIcon(this.toggleBtn, s.kind === 'running' || s.kind === 'starting' ? 'square' : 'play')
-      this.toggleBtn.title = s.kind === 'running' || s.kind === 'starting' ? '停止' : '启动'
+    // 标题栏动作按钮图标随状态切换（addAction 返回的元素可被 setIcon 重绘）
+    const running = s.kind === 'running' || s.kind === 'starting'
+    if (this.toggleActionEl) {
+      this.toggleActionEl.empty()
+      setIcon(this.toggleActionEl, running ? 'square' : 'play')
+      this.toggleActionEl.title = running ? '停止' : '启动'
+      this.toggleActionEl.setAttribute('aria-label', running ? '停止' : '启动')
     }
 
     // iframe 与覆盖层
