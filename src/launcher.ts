@@ -121,7 +121,13 @@ export function normalizeDshBin(input: string | undefined | null): string | null
 }
 
 /** 常见 npm 全局 node_modules 根（按平台） */
+let cachedGlobalRoots: string[] | null = null
 export function globalModuleRoots(): string[] {
+  // 结果缓存：spawnSync('npm') 最坏阻塞 10s（npm 慢时），Obsidian 渲染进程
+  // 里每次启动都同步跑一次不可接受。进程生命周期内 npm root 不变，
+  // 首次探测后复用。注意：运行中后装的 dsh 不会被发现，但固定路径
+  // （/opt/homebrew/lib/node_modules 等）仍覆盖常见安装位置。
+  if (cachedGlobalRoots) return cachedGlobalRoots
   const roots: string[] = []
   if (process.env.DSH_GLOBAL_MODULES) roots.push(process.env.DSH_GLOBAL_MODULES)
   const npmRoot = spawnSync('npm', ['root', '-g'], {
@@ -142,7 +148,8 @@ export function globalModuleRoots(): string[] {
     if (appData) roots.push(path.join(appData, 'npm', 'node_modules'))
   }
   // 去重保序
-  return [...new Set(roots)]
+  cachedGlobalRoots = [...new Set(roots)]
+  return cachedGlobalRoots
 }
 
 /**
@@ -204,6 +211,17 @@ export function commonNodeBins(): string[] {
   return [...new Set(bins)]
 }
 
+/** 探测 node 可执行文件的 major 版本；失败返回 0（nodeMajor 0 = 未知） */
+export function probeNodeMajor(nodeBin: string): number {
+  try {
+    const out = spawnSync(nodeBin, ['--version'], { encoding: 'utf8', timeout: 5000, windowsHide: true })
+    const m = /^v?(\d+)\./.exec((out.stdout || '').trim())
+    return m ? Number(m[1]) : 0
+  } catch {
+    return 0
+  }
+}
+
 /**
  * 选择 Node 运行时。
  * 默认顺序：显式路径 → 系统 `node`（PATH + 常见安装路径，返回绝对路径，
@@ -215,8 +233,10 @@ export function resolveNodeBin(explicit?: string, embeddedNodeVersion?: string, 
   const notes: string[] = []
   const explicitBin = explicit?.trim() || process.env.DSH_NODE
   if (explicitBin) {
-    notes.push(`使用显式 Node: ${explicitBin}`)
-    return { nodeBin: explicitBin, useElectronAsNode: false, nodeMajor: 0, notes }
+    const major = probeNodeMajor(explicitBin)
+    const note = major > 0 ? `使用显式 Node: ${explicitBin}（v${major}）` : `使用显式 Node: ${explicitBin}`
+    notes.push(note)
+    return { nodeBin: explicitBin, useElectronAsNode: false, nodeMajor: major, notes }
   }
   if (useEmbedded && process.execPath && embeddedNodeVersion) {
     const major = Number(embeddedNodeVersion.split('.')[0]) || 0
@@ -228,8 +248,13 @@ export function resolveNodeBin(explicit?: string, embeddedNodeVersion?: string, 
   }
   for (const candidate of commonNodeBins()) {
     if (fs.existsSync(candidate)) {
-      notes.push(`使用系统 Node: ${candidate}`)
-      return { nodeBin: candidate, useElectronAsNode: false, nodeMajor: 0, notes }
+      const major = probeNodeMajor(candidate)
+      notes.push(
+        major >= NODE_SQLITE_MIN_MAJOR
+          ? `使用系统 Node: ${candidate}（v${major}，支持全文搜索所需 SQLite）`
+          : `使用系统 Node: ${candidate}（v${major || '?'}；全文搜索需 Node ≥${NODE_SQLITE_MIN_MAJOR}）`,
+      )
+      return { nodeBin: candidate, useElectronAsNode: false, nodeMajor: major, notes }
     }
   }
   notes.push('未找到 Node。请安装 Node（https://nodejs.org），或在设置中填写 Node 可执行文件路径')
@@ -276,7 +301,9 @@ export async function waitForReady(host: string, port: number, timeoutMs = 120_0
   for (;;) {
     if (await isPortUp(host, port, 1500)) return true
     if (Date.now() > deadline) return false
-    await new Promise((r) => window.setTimeout(r, 500))
+    // globalThis.setTimeout：Node（smoke）与 Obsidian 渲染进程都可用，
+    // 不引入 window 依赖（launcher 保持纯 Node 可测）。
+    await new Promise((r) => globalThis.setTimeout(r, 500))
   }
 }
 
@@ -339,6 +366,14 @@ export function ensureSharedProfiles(dshHome: string, sharedRoot: string): void 
 }
 
 /**
+ * YAML 单引号标量：路径含空格/冒号/#/反斜杠时依然安全。
+ * 单引号内只转义 `'`（写为 `''`），Windows 反斜杠路径不受双引号转义影响。
+ */
+function yamlScalar(p: string): string {
+  return `'${p.replace(/'/g, "''")}'`
+}
+
+/**
  * per-vault 模式下的"配置共享"：把模型/密钥/主题配置指回共享 `~/.dsh`，
  * 只隔离会话数据。
  *
@@ -364,11 +399,11 @@ export function ensureSharedConfigPatch(dshHome: string, sharedRoot: string): vo
 
     const blockSettings = `- id: settings
   config:
-    path: ${settingsPath}
+    path: ${yamlScalar(settingsPath)}
 `
     const blockCredentials = `- id: credentials
   config:
-    path: ${credentialsPath}
+    path: ${yamlScalar(credentialsPath)}
 `
 
     let content = ''
@@ -413,17 +448,26 @@ export function launchDsh(opts: LaunchOptions & { dshBin: string; nodeBin: strin
   // 插件侧的面板就是 UI；需要浏览器时走显式的"在系统浏览器中打开"
   // 动作（shell.openExternal）。
   const args = [opts.dshBin, 'web', '--host', host, '--port', String(port), '--no-open']
+  // opts.env 是「附加」环境变量，可能为空对象 {}（main.ts 在 shared/custom 模式
+  // 传入 {}）——绝不能整体替换 process.env，否则子进程丢失 PATH/HOME 等全部
+  // 环境：dsh web 内部 spawn 的浏览器 opener / git / pnpm 等会 ENOENT，
+  // HOME 相关的凭据与 keyring 解析也会走样。必须叠加在 process.env 之上。
   const env: NodeJS.ProcessEnv = {
-    ...(opts.env ?? process.env ?? {}),
+    ...process.env,
+    ...opts.env,
     DSH_HOME: opts.dshHome,
   }
   if (opts.useElectronAsNode) env.ELECTRON_RUN_AS_NODE = '1'
-  return spawn(opts.nodeBin, args, {
+  const proc = spawn(opts.nodeBin, args, {
     env,
     cwd: opts.cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
   })
+  // stdout 管道没有消费者会把日志积在内存缓冲里；日志走 stderr（main.ts
+  // hookChildLogs 已接），stdout 直接放空。
+  proc.stdout?.resume()
+  return proc
 }
 
 /**
@@ -495,9 +539,15 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
     stderrTail = (stderrTail + d.toString()).slice(-4000)
   })
 
+  // spawn 层面的错误（ENOENT / EACCES / 权限等）不产生 stderr 输出，只在
+  // 'error' 事件里带出来——收集起来，避免用户只看到泛化的「进程退出」。
+  let spawnError: Error | undefined
   const childDied = new Promise<boolean>((resolve) => {
     proc.once('exit', () => resolve(true))
-    proc.once('error', () => resolve(true))
+    proc.once('error', (err) => {
+      spawnError = err
+      resolve(true)
+    })
   })
 
   const ready = await Promise.race([
@@ -513,11 +563,21 @@ export async function ensureDshRunning(opts: LaunchOptions): Promise<{ status: S
   if (await isPortUp(host, port)) {
     return { status: await attachStatus(opts, host, port, url), proc }
   }
-  return { status: { kind: 'error', message: summarizeChildError(stderrTail) }, proc }
+  return { status: { kind: 'error', message: summarizeChildError(stderrTail, spawnError) }, proc }
 }
 
-/** 从 stderr 尾部提炼可读错误 */
-function summarizeChildError(stderrTail: string): string {
+/** 从 stderr 尾部 / spawn error 提炼可读错误 */
+function summarizeChildError(stderrTail: string, spawnError?: Error): string {
+  if (spawnError) {
+    const code = (spawnError as NodeJS.ErrnoException).code
+    if (code === 'ENOENT') {
+      return '无法启动 dsh 子进程（ENOENT）：Node 可执行文件不存在或不可执行。请在设置里检查 Node 路径，或重新安装 Node'
+    }
+    if (code === 'EACCES') {
+      return '无法启动 dsh 子进程（EACCES）：Node 可执行文件没有执行权限，请检查文件权限'
+    }
+    return `无法启动 dsh 子进程: ${spawnError.message}`
+  }
   const lines = stderrTail.split(/\r?\n/).filter(Boolean)
   const addrLine = lines.find((l) => l.includes('EADDRINUSE'))
   const errLine = lines.find((l) => l.includes('Error:'))
@@ -535,7 +595,7 @@ function summarizeChildError(stderrTail: string): string {
 export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5000): Promise<void> {
   if (!proc || proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve()
   return new Promise((resolve) => {
-    const timer = window.setTimeout(() => {
+    const timer = globalThis.setTimeout(() => {
       try {
         proc.kill('SIGKILL')
       } catch {
@@ -543,13 +603,13 @@ export function stopProcess(proc: ChildProcess | null | undefined, timeoutMs = 5
       }
     }, timeoutMs)
     proc.once('exit', () => {
-      window.clearTimeout(timer)
+      globalThis.clearTimeout(timer)
       resolve()
     })
     try {
       proc.kill('SIGTERM')
     } catch {
-      window.clearTimeout(timer)
+      globalThis.clearTimeout(timer)
       resolve()
     }
   })
@@ -624,11 +684,12 @@ export function isProcessAlive(pid: number): boolean {
 export function isDshWebOnPort(pid: number, port: number): boolean {
   try {
     if (process.platform === 'win32') {
-      const out = spawnSync('wmic', ['process', 'where', `processid=${pid}`, 'get', 'commandline'], {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-      })
+      // wmic 在 Win10 21H1+ 弃用、Win11 24H2 移除；换 PowerShell CIM 查询。
+      const out = spawnSync(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true },
+      )
       const cmd = out.stdout || ''
       return cmd.includes('dsh') && cmd.includes(`--port ${port}`)
     }

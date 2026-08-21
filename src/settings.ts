@@ -135,6 +135,23 @@ export class DshDockSettingsTab extends PluginSettingTab {
     // ---------- 网络 ----------
     new Setting(containerEl).setName('网络').setHeading()
     new Setting(containerEl)
+      .setName('监听地址')
+      .setDesc('仅本机回环地址可选：官方 dsh 拒绝 --host 0.0.0.0（不支持局域网访问），非回环值没有意义。旧版遗留的自定义值会被重置为 127.0.0.1。')
+      .addDropdown((dd) => {
+        // 历史 data.json 可能残留自定义 host（隐藏字段时代手改的），收敛到回环
+        if (this.plugin.settings.host !== '127.0.0.1' && this.plugin.settings.host !== 'localhost') {
+          this.plugin.settings.host = '127.0.0.1'
+          void this.plugin.saveSettings()
+        }
+        dd.addOption('127.0.0.1', '127.0.0.1（仅本机，默认）')
+        dd.addOption('localhost', 'localhost（仅本机）')
+        dd.setValue(this.plugin.settings.host)
+        dd.onChange(async (v) => {
+          this.plugin.settings.host = v
+          await this.plugin.saveSettings()
+        })
+      })
+    new Setting(containerEl)
       .setName('监听端口（基准）')
       .setDesc('官方默认 3080。shared/custom 模式直接使用；per-vault 模式在此基础上按 vault 派生独立端口（每 vault 独占，会话互不可见）。')
       .addText((t) =>

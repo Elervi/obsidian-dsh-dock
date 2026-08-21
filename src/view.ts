@@ -94,8 +94,10 @@ export class DshWebView extends ItemView {
     })
     this.overlayEl = body.createDiv({ cls: 'dsh-dock-overlay' })
 
-    // 状态联动
-    this.plugin.onStatusChange(() => this.refresh())
+    // 状态联动。用 Component.register（官方 API，obsidian.d.ts）注册退订函数：
+    // 视图卸载（onClose）时自动执行，不会每次打开面板都往
+    // plugin.statusListeners 累积闭包（旧实现泄漏）。
+    this.register(this.plugin.onStatusChange(() => this.refresh()))
     this.refresh()
 
     // 兜底：打开面板时若服务未启动且端口可用，尝试拉起
