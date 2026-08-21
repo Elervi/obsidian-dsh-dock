@@ -53,7 +53,9 @@ jobs:
         run: npm run build
 
       - name: Install dsh CLI
-        run: npm install -g @deepseek-ai/dsh
+        run: |
+          npm install -g @deepseek-ai/dsh
+          dsh --version
 
       - name: Smoke test
         run: npm run smoke
