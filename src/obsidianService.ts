@@ -235,7 +235,7 @@ export class ObsidianBridgeService implements BridgeService {
     return f
   }
 
-  listNotes(opts: { folder?: string; all?: boolean; ignoreDirs: string[] }): { total: number; notes: BridgeNoteInfo[] } {
+  async listNotes(opts: { folder?: string; all?: boolean; ignoreDirs: string[] }): Promise<{ total: number; notes: BridgeNoteInfo[] }> {
     const notes = this.vaultFiles(opts).map((f) => {
       const item: BridgeNoteInfo = { path: f.path, size: f.stat.size }
       if (opts.all) {

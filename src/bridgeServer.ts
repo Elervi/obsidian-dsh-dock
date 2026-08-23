@@ -149,7 +149,7 @@ export async function createBridgeServer(opts: BridgeServerOptions): Promise<Bri
           return
         }
         if (path === '/v1/notes') {
-          sendJson(res, 200, service.listNotes({
+          sendJson(res, 200, await service.listNotes({
             folder: q.get('folder') ?? undefined,
             all: queryBool(q.get('all')) ?? false,
             ignoreDirs: queryList(q.get('ignore')),

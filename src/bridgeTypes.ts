@@ -19,7 +19,7 @@ export interface BridgeService {
   readonly info: { name: string; path: string | undefined; version: string }
   /** 当前 vault 与当前打开的笔记（Obsidian 视角，权威） */
   current(): { name: string; path: string; activeFile?: string; updatedAt: number }
-  listNotes(opts: { folder?: string; all?: boolean; ignoreDirs: string[] }): { total: number; notes: BridgeNoteInfo[] }
+  listNotes(opts: { folder?: string; all?: boolean; ignoreDirs: string[] }): Promise<{ total: number; notes: BridgeNoteInfo[] }>
   listFolders(opts: { folder?: string; ignoreDirs: string[] }): Promise<{ total: number; folders: BridgeFolderStat[] }>
   readNote(rel: string): Promise<{ path: string; content: string; size?: number; mtime?: number }>
   writeNote(req: BridgeWriteRequest): Promise<BridgeWriteResult>
