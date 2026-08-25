@@ -4,7 +4,7 @@
 [![GitHub release](https://img.shields.io/github/v/release/Elervi/obsidian-dsh-dock?style=flat-square)](https://github.com/Elervi/obsidian-dsh-dock/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
 
-> 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏——跑官方 `dsh CLI`、官方 UI 原样嵌入，只做外壳。
+> 把官方 **DeepSeek Harness Web**（127.0.0.1:3080）停靠进 Obsidian 侧边栏——跑官方 `dsh CLI`、官方 UI 原样嵌入，轻量高效。
 
 [![🇨🇳 中文](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-%E5%BD%93%E5%89%8D%E9%A1%B5-7C3AED?style=flat-square)](#) [![🇬🇧 English](https://img.shields.io/badge/English-%E8%8B%B1%E6%96%87%E7%89%88-0969DA?style=flat-square)](README.en.md)
 
@@ -49,7 +49,7 @@
 | 随 Obsidian 自动启动 | ✅ 开 |
 | Obsidian API 桥 | ✅ 开（127.0.0.1 回环，token 鉴权，端口 18080+ 独立于 dsh web） |
 
-## 🔧 原理
+## 🔧 **Obsidian API 桥（B1）**
 
 ```
 node <dsh>/lib/bin.js web --host 127.0.0.1 --port <port>   env: DSH_HOME
