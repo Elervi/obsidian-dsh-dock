@@ -76,6 +76,22 @@ function stemOf(rel: string): string {
   return (rel.replace(/\.md$/, '').split('/').pop() ?? '') || rel
 }
 
+/**
+ * M1：拒绝明显可灾难性回溯的正则（ReDoS）。查询词虽经桥 token 鉴权，但可能
+ * 来自不可信的 agent 提示词；正则会在 Obsidian 渲染进程内同步执行，一次失控
+ * 匹配即可卡死整个 UI（本地 DoS）。
+ * 覆盖 OWASP 经典形态：量化分组再量化（(a+)+、(ab*)*）、组内重叠/可选分支
+ * 被量化（(a|aa)+、(a|a?)+）。普通交替 `cat|dog` 不受影响。
+ */
+function isRiskyRegex(q: string): boolean {
+  // 组内带量词 + 组后量词：如 (a+)+、(ab*)*、([a-z]{2,})+
+  if (/\([^()]*[+*{][^()]*\)\s*[+*?{]/.test(q)) return true
+  // 组内交替 + 组后量词：如 (a|aa)+、(a|a?)+、（保守起见 (cat|dog)+ 也拒绝，
+  // 可安全改写为 cat|dog）
+  if (/\([^()]*\|[^()]*\)\s*[+*]/.test(q)) return true
+  return false
+}
+
 /** 该路径是否位于被忽略目录（点目录或用户 ignoreDirs）内 */
 function inIgnoredDir(rel: string, ignoreDirs: readonly string[]): boolean {
   const dirs = rel.split('/').slice(0, -1)
@@ -424,11 +440,22 @@ export class ObsidianBridgeService implements BridgeService {
   async search(req: BridgeSearchRequest): Promise<{ total: number; hits: BridgeHit[] }> {
     const q = req.q.trim()
     if (q === '') throw new BridgeError(BridgeErrorCode.INVALID_ARGS, 'query 不能为空', 400)
+    // M1：长度上限 + 灾难性回溯形态拒绝（正则同步执行于渲染进程，失控会卡死 UI）
+    if (q.length > 256) {
+      throw new BridgeError(BridgeErrorCode.INVALID_ARGS, 'query 过长（最多 256 字符），请简化搜索词', 400)
+    }
     const regex = req.regex ?? false
     const caseSensitive = req.case_sensitive ?? false
     const matchAll = req.match_all ?? false
     let re: RegExp | undefined
     if (regex) {
+      if (isRiskyRegex(q)) {
+        throw new BridgeError(
+          BridgeErrorCode.REGEX_INVALID,
+          `正则疑似灾难性回溯，已拒绝：${q}（请简化，或改用普通关键词搜索）`,
+          400,
+        )
+      }
       try {
         re = new RegExp(q, caseSensitive ? '' : 'i')
       } catch (err) {

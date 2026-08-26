@@ -6,7 +6,7 @@
 # github.com releases/download domain.
 #
 # Usage:
-#   GH_TOKEN=<token> bash scripts/publish.sh [version, default 0.3.0]
+#   GH_TOKEN=<token> bash scripts/publish.sh [version, default 0.3.1]
 #
 # Token requirements (write access to Elervi/obsidian-dsh-dock):
 #   - classic PAT: at least `repo` scope
@@ -21,7 +21,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 REPO="Elervi/obsidian-dsh-dock"
-TAG="${1:-0.3.0}"
+TAG="${1:-0.3.1}"
 TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
 if [ -z "$TOKEN" ]; then
   echo "Error: set GH_TOKEN (or GITHUB_TOKEN) with write access to $REPO" >&2

@@ -103,6 +103,8 @@ export default class DshDockPlugin extends Plugin {
   private statusListeners = new Set<() => void>()
   /** 标记文件写入防抖 timer（窗口 focus 可能高频触发） */
   private markerTimer: number | null = null
+  /** 用户已请求停止：start() 中途检测到则杀掉刚拉起的进程、不再接管（M3 竞态） */
+  private cancelStart = false
   /**
    * Obsidian API 桥（B1）：本窗口的 Obsidian 渲染进程内 HTTP 服务，把
    * app.vault / metadataCache / fileManager 的官方解析结果暴露给 DSH 侧
@@ -113,7 +115,7 @@ export default class DshDockPlugin extends Plugin {
 
   /** 桥的访问地址（运行中才有值） */
   get bridgeUrl(): string | null {
-    return this.bridge ? `http://${this.settings.host}:${this.bridge.port}` : null
+    return this.bridge ? `http://${this.loopbackHost()}:${this.bridge.port}` : null
   }
 
   // ------------------------------------------------------------------ 生命周期
@@ -196,6 +198,10 @@ export default class DshDockPlugin extends Plugin {
   }
 
   override onunload(): void {
+    // C3：卸载时清掉未到期的标记写入防抖 timer，避免卸载后无谓写盘
+    if (this.markerTimer) window.clearTimeout(this.markerTimer)
+    this.markerTimer = null
+    this.cancelStart = true
     void this.stop()
     void this.stopBridge()
     this.statusListeners.clear()
@@ -223,7 +229,17 @@ export default class DshDockPlugin extends Plugin {
   get baseUrl(): string {
     const vaultRoot = this.vaultRoot()
     const port = computePort(this.settings, vaultRoot)
-    return `http://${this.settings.host}:${port}/`
+    return `http://${this.loopbackHost()}:${port}/`
+  }
+
+  /**
+   * H2：监听 host 一律收敛到回环地址。官方 dsh 拒绝 `--host 0.0.0.0`，
+   * 桥也绝不绑定非回环地址 —— 历史 data.json 可能残留自定义 host
+   * （loadSettings 已归一化，这里再兜底一次，防止 UI 之外的路径改动
+   * settings.host 把 vault API 暴露到局域网）。
+   */
+  private loopbackHost(): string {
+    return this.settings.host === 'localhost' ? 'localhost' : '127.0.0.1'
   }
 
   /** 当前 vault 根目录（无则 undefined）。D1：instanceof 取代强转，类型安全 */
@@ -296,12 +312,12 @@ export default class DshDockPlugin extends Plugin {
       const port = computeBridgePort(vaultRoot)
       const service = new ObsidianBridgeService(this.app, this.manifest.version)
       this.bridge = await createBridgeServer({
-        host: this.settings.host,
+        host: this.loopbackHost(),
         port,
         token: this.bridgeToken,
         service,
       })
-      console.info(`[dsh-dock] Obsidian API 桥已启动: http://${this.settings.host}:${this.bridge.port}（vault: ${service.info.name}）`)
+      console.info(`[dsh-dock] Obsidian API 桥已启动: http://${this.loopbackHost()}:${this.bridge.port}（vault: ${service.info.name}）`)
       this.refreshCurrentVaultMarker()
     } catch (err) {
       const msg = err instanceof BridgeError || err instanceof Error ? err.message : String(err)
@@ -329,6 +345,7 @@ export default class DshDockPlugin extends Plugin {
   async start(): Promise<ServerStatus> {
     if (this.starting) return this.status
     if (this.status.kind === 'running') return this.status
+    this.cancelStart = false
     this.starting = true
     this.setStatus({ kind: 'starting' })
     try {
@@ -347,7 +364,7 @@ export default class DshDockPlugin extends Plugin {
         dshBin: this.settings.dshBin,
         nodeBin: this.settings.nodeBin,
         port,
-        host: this.settings.host,
+        host: this.loopbackHost(),
         dshHome,
         // per-vault 配置共享：模型/密钥/主题指回共享 ~/.dsh，只隔离会话。
         ...(sharedConfigRoot ? { sharedConfigRoot } : {}),
@@ -378,6 +395,19 @@ export default class DshDockPlugin extends Plugin {
             : {}),
         },
       })
+      // M3 竞态：拉起期间用户点了停止 → 杀掉刚拉起的进程、不接管、不写 PID，
+      // 状态回到 stopped（否则"点了停止服务却起来了"，且进程变半托管）。
+      if (this.cancelStart) {
+        if (result.proc) {
+          try {
+            await stopProcess(result.proc)
+          } catch {
+            /* ignore */
+          }
+        }
+        this.setStatus({ kind: 'stopped' })
+        return this.status
+      }
       this.proc = result.proc ?? null
       if (result.status.kind === 'running' && result.proc && !result.status.attached) {
         // 新起进程：写入 PID 文件，供下次启动清扫孤儿时识别归属。
@@ -403,6 +433,8 @@ export default class DshDockPlugin extends Plugin {
   }
 
   async stop(): Promise<void> {
+    // M3：先置取消标记再置 starting=false，让正在拉起的 start() 意识到停止请求
+    this.cancelStart = true
     this.starting = false
     if (this.proc) {
       await stopProcess(this.proc)
@@ -476,6 +508,11 @@ export default class DshDockPlugin extends Plugin {
   private async loadSettings(): Promise<void> {
     const data = (await this.loadData()) as Partial<DshDockSettings> | null
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {})
+    // H2：历史 data.json 可能残留非回环 host（隐藏字段时代手改），加载即归一化，
+    // 不再依赖"打开设置页才收敛"（设置页的收敛见 settings.ts）。
+    if (this.settings.host !== '127.0.0.1' && this.settings.host !== 'localhost') {
+      this.settings.host = '127.0.0.1'
+    }
     // 旧版（dsh-host V0.1）设置迁移：dshHome 字符串 → custom 模式
     const legacy: { dshHome?: string } | null = data
     if (legacy?.dshHome && typeof legacy.dshHome === 'string' && legacy.dshHome.trim()) {

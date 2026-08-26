@@ -3,6 +3,8 @@
  * - platform: node —— node 内置模块（child_process/fs/os/...）自动 external，
  *   运行时由 Obsidian 桌面端的 Node 环境 require 提供；
  * - obsidian / electron 保持 external（宿主注入）。
+ * - sourcemap：只有 --watch（开发）才内联，一次性构建不内联 —— 与仓库已提交
+ *   的 main.js 惯例一致（插件单文件保持精简），CI 的构建产物漂移检查依赖此约定。
  */
 import esbuild from 'esbuild'
 
@@ -20,7 +22,7 @@ const options = {
   format: 'cjs',
   target: 'node18',
   platform: 'node',
-  sourcemap: production ? false : 'inline',
+  sourcemap: watch ? 'inline' : false,
   minify: production,
   outfile: 'main.js',
   logLevel: 'info',

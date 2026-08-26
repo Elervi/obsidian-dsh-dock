@@ -63,25 +63,41 @@ function sendError(res: ServerResponse, err: unknown): void {
     sendJson(res, err.status, { error: { code: err.code, message: err.message } })
     return
   }
-  const msg = err instanceof Error ? err.message : String(err)
-  sendJson(res, 500, { error: { code: BridgeErrorCode.INTERNAL, message: `桥内部错误: ${msg}` } })
+  // L7：非 BridgeError 的内部异常不向客户端泄漏原始文案（可能是 Obsidian/Node
+  // 内部错误信息），只记日志，对外统一 INTERNAL。
+  const detail = err instanceof Error ? err.message : String(err)
+  console.warn('[dsh-dock] 桥内部错误', detail)
+  sendJson(res, 500, { error: { code: BridgeErrorCode.INTERNAL, message: '桥内部错误' } })
 }
 
 function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
+    let settled = false
+    const fail = (err: unknown): void => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
     req.on('data', (chunk: Buffer) => {
+      if (settled) return
       size += chunk.length
       if (size > maxBytes) {
-        reject(new BridgeError(BridgeErrorCode.TOO_LARGE, `请求体超过 ${maxBytes} 字节上限`, 413))
-        req.destroy()
+        // M4：超限时只拒绝并继续 drain（不再 accumulate），不在此 destroy ——
+        // 否则外层写 413 响应时会撞 ERR_STREAM_DESTROYED，丢响应/未处理异常。
+        req.resume()
+        fail(new BridgeError(BridgeErrorCode.TOO_LARGE, `请求体超过 ${maxBytes} 字节上限`, 413))
         return
       }
       chunks.push(chunk)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', (err) => reject(err))
+    req.on('end', () => {
+      if (settled) return
+      settled = true
+      resolve(Buffer.concat(chunks).toString('utf8'))
+    })
+    req.on('error', (err) => fail(err))
   })
 }
 
@@ -91,6 +107,14 @@ function parseJson<T>(raw: string): T {
   } catch {
     throw new BridgeError(BridgeErrorCode.BAD_REQUEST, '请求体不是合法 JSON', 400)
   }
+}
+
+/** M5：运行时字段校验 —— 把错误类型挡在服务层之前，返回明确 400 而非内部 TypeError */
+function assertStr(v: unknown, field: string): string {
+  if (typeof v !== 'string') {
+    throw new BridgeError(BridgeErrorCode.INVALID_ARGS, `字段 ${field} 必须是字符串`, 400)
+  }
+  return v
 }
 
 function queryBool(v: string | null): boolean | undefined {
@@ -121,6 +145,7 @@ function requireQuery(params: URLSearchParams, key: string): string {
 export async function createBridgeServer(opts: BridgeServerOptions): Promise<BridgeServerHandle> {
   const { service } = opts
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY
+  let boundPort = opts.port
 
   const server = createServer(async (req, res) => {
     try {
@@ -132,7 +157,19 @@ export async function createBridgeServer(opts: BridgeServerOptions): Promise<Bri
         return
       }
 
-      const url = new URL(req.url ?? '/', `http://${opts.host}:${opts.port}`)
+      // ---- Host 头校验（M2，防 DNS rebinding / 非回环 Host 探测） ----
+      // 桥只服务本机回环，Host 必须是 127.0.0.1/localhost/[::1]:<实际端口>。
+      const hostHeader = (req.headers.host ?? '').toLowerCase()
+      const hostOk =
+        hostHeader === `127.0.0.1:${boundPort}` ||
+        hostHeader === `localhost:${boundPort}` ||
+        hostHeader === `[::1]:${boundPort}`
+      if (!hostOk) {
+        sendJson(res, 403, { error: { code: BridgeErrorCode.FORBIDDEN, message: '拒绝非本机 Host 请求' } })
+        return
+      }
+
+      const url = new URL(req.url ?? '/', `http://${opts.host}:${boundPort}`)
       const path = url.pathname
       const q = url.searchParams
 
@@ -218,31 +255,60 @@ export async function createBridgeServer(opts: BridgeServerOptions): Promise<Bri
       if (req.method === 'POST') {
         const raw = await readBody(req, maxBody)
         if (path === '/v1/write') {
-          sendJson(res, 200, await service.writeNote(parseJson<import('./bridgeTypes.js').BridgeWriteRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.writeNote({
+            path: assertStr(body.path, 'path'),
+            content: assertStr(body.content, 'content'),
+            op: body.op === 'append' ? 'append' : 'write',
+            unique: body.unique === true,
+            overwrite: body.overwrite === true,
+          }))
           return
         }
         if (path === '/v1/edit') {
-          sendJson(res, 200, await service.editNote(parseJson<import('./bridgeTypes.js').BridgeEditRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.editNote({
+            path: assertStr(body.path, 'path'),
+            old_string: assertStr(body.old_string, 'old_string'),
+            new_string: assertStr(body.new_string, 'new_string'),
+            replace_all: body.replace_all === true,
+          }))
           return
         }
         if (path === '/v1/frontmatter') {
-          sendJson(res, 200, await service.updateFrontmatter(parseJson<import('./bridgeTypes.js').BridgeFrontmatterUpdateRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.updateFrontmatter({
+            path: assertStr(body.path, 'path'),
+            set: typeof body.set === 'object' && body.set !== null ? (body.set as Record<string, string>) : undefined,
+            delete: Array.isArray(body.delete) ? (body.delete as string[]) : undefined,
+          }))
           return
         }
         if (path === '/v1/rename') {
-          sendJson(res, 200, await service.rename(parseJson<import('./bridgeTypes.js').BridgeRenameRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.rename({
+            old_path: assertStr(body.old_path, 'old_path'),
+            new_path: assertStr(body.new_path, 'new_path'),
+            keep_old: body.keep_old === 'stub' ? 'stub' : 'keep',
+          }))
           return
         }
         if (path === '/v1/trash') {
-          sendJson(res, 200, await service.trash(parseJson<import('./bridgeTypes.js').BridgeTrashRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.trash({ path: assertStr(body.path, 'path') }))
           return
         }
         if (path === '/v1/open') {
-          sendJson(res, 200, await service.openNote(parseJson<import('./bridgeTypes.js').BridgeOpenRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.openNote({ path: assertStr(body.path, 'path') }))
           return
         }
         if (path === '/v1/link') {
-          sendJson(res, 200, await service.noteLink(parseJson<import('./bridgeTypes.js').BridgeLinkRequest>(raw)))
+          const body = parseJson<Record<string, unknown>>(raw)
+          sendJson(res, 200, await service.noteLink({
+            path: assertStr(body.path, 'path'),
+            source: typeof body.source === 'string' ? body.source : undefined,
+          }))
           return
         }
         throw new BridgeError(BridgeErrorCode.NOT_FOUND, `未知端点 ${req.method} ${path}`, 404)
@@ -262,12 +328,37 @@ export async function createBridgeServer(opts: BridgeServerOptions): Promise<Bri
         server.once('error', reject)
         server.listen(port, opts.host, () => {
           server.removeListener('error', reject)
+          const addr = server.address()
+          boundPort = typeof addr === 'object' && addr !== null ? addr.port : port
           resolve()
         })
       })
+      // L1：绑定成功后挂常驻 error 监听 —— 运行期服务器错误只记日志，
+      // 不再变成渲染进程未捕获异常。
+      server.on('error', (err) => {
+        console.warn('[dsh-dock] 桥服务器运行期错误', err)
+      })
+      // 请求接收超时，防 slowloris 式半开连接拖住本地桥
+      server.requestTimeout = 60_000
+      server.headersTimeout = 15_000
+      server.keepAliveTimeout = 5_000
+
+      // close 幂等 + 主动断开 keep-alive 连接（C2），避免 close 回调悬挂
+      let closed = false
       return {
-        port,
-        close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+        port: boundPort,
+        close: () =>
+          new Promise<void>((resolve) => {
+            if (closed) {
+              resolve()
+              return
+            }
+            closed = true
+            server.closeAllConnections?.()
+            server.close(() => resolve())
+            const t = setTimeout(() => resolve(), 1000)
+            if (typeof t === 'object' && t !== null && 'unref' in t) t.unref()
+          }),
       }
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code

@@ -937,7 +937,7 @@ function currentVaultMarkerPath() {
 function writeCurrentVaultMarker(name, vaultPath, activeFile, bridge) {
   try {
     const file = currentVaultMarkerPath();
-    fs2.mkdirSync(path2.dirname(file), { recursive: true });
+    fs2.mkdirSync(path2.dirname(file), { recursive: true, mode: 448 });
     const payload = { name, path: vaultPath, updatedAt: Date.now() };
     if (activeFile) payload.activeFile = activeFile;
     if (bridge) {
@@ -945,8 +945,12 @@ function writeCurrentVaultMarker(name, vaultPath, activeFile, bridge) {
       payload.bridgeToken = bridge.token;
     }
     const tmp = `${file}.tmp`;
-    fs2.writeFileSync(tmp, JSON.stringify(payload, null, 2));
+    fs2.writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 384 });
     fs2.renameSync(tmp, file);
+    try {
+      fs2.chmodSync(file, 384);
+    } catch {
+    }
   } catch (err) {
     console.warn("[dsh-dock] \u5199\u5165 current-vault \u6807\u8BB0\u5931\u8D25", err);
   }
@@ -975,6 +979,7 @@ var import_node_crypto = require("node:crypto");
 var BridgeErrorCode = {
   BAD_REQUEST: "BRIDGE_BAD_REQUEST",
   UNAUTHORIZED: "BRIDGE_UNAUTHORIZED",
+  FORBIDDEN: "BRIDGE_FORBIDDEN",
   INTERNAL: "BRIDGE_INTERNAL",
   NOT_FOUND: "BRIDGE_NOT_FOUND",
   METHOD_NOT_ALLOWED: "BRIDGE_METHOD_NOT_ALLOWED",
@@ -1025,24 +1030,36 @@ function sendError(res, err) {
     sendJson(res, err.status, { error: { code: err.code, message: err.message } });
     return;
   }
-  const msg = err instanceof Error ? err.message : String(err);
-  sendJson(res, 500, { error: { code: BridgeErrorCode.INTERNAL, message: `\u6865\u5185\u90E8\u9519\u8BEF: ${msg}` } });
+  const detail = err instanceof Error ? err.message : String(err);
+  console.warn("[dsh-dock] \u6865\u5185\u90E8\u9519\u8BEF", detail);
+  sendJson(res, 500, { error: { code: BridgeErrorCode.INTERNAL, message: "\u6865\u5185\u90E8\u9519\u8BEF" } });
 }
 function readBody(req, maxBytes) {
   return new Promise((resolve2, reject) => {
     const chunks = [];
     let size = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
     req.on("data", (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
-        reject(new BridgeError(BridgeErrorCode.TOO_LARGE, `\u8BF7\u6C42\u4F53\u8D85\u8FC7 ${maxBytes} \u5B57\u8282\u4E0A\u9650`, 413));
-        req.destroy();
+        req.resume();
+        fail(new BridgeError(BridgeErrorCode.TOO_LARGE, `\u8BF7\u6C42\u4F53\u8D85\u8FC7 ${maxBytes} \u5B57\u8282\u4E0A\u9650`, 413));
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve2(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", (err) => reject(err));
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve2(Buffer.concat(chunks).toString("utf8"));
+    });
+    req.on("error", (err) => fail(err));
   });
 }
 function parseJson(raw) {
@@ -1051,6 +1068,12 @@ function parseJson(raw) {
   } catch {
     throw new BridgeError(BridgeErrorCode.BAD_REQUEST, "\u8BF7\u6C42\u4F53\u4E0D\u662F\u5408\u6CD5 JSON", 400);
   }
+}
+function assertStr(v, field) {
+  if (typeof v !== "string") {
+    throw new BridgeError(BridgeErrorCode.INVALID_ARGS, `\u5B57\u6BB5 ${field} \u5FC5\u987B\u662F\u5B57\u7B26\u4E32`, 400);
+  }
+  return v;
 }
 function queryBool(v) {
   if (v === null) return void 0;
@@ -1075,6 +1098,7 @@ function requireQuery(params, key) {
 async function createBridgeServer(opts) {
   const { service } = opts;
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
+  let boundPort = opts.port;
   const server = (0, import_node_http.createServer)(async (req, res) => {
     try {
       const header = req.headers.authorization ?? "";
@@ -1083,7 +1107,13 @@ async function createBridgeServer(opts) {
         sendJson(res, 401, { error: { code: BridgeErrorCode.UNAUTHORIZED, message: "\u65E0\u6548\u6216\u7F3A\u5931\u7684\u6865 token\uFF08DSH_OBSIDIAN_BRIDGE_TOKEN\uFF09" } });
         return;
       }
-      const url = new URL(req.url ?? "/", `http://${opts.host}:${opts.port}`);
+      const hostHeader = (req.headers.host ?? "").toLowerCase();
+      const hostOk = hostHeader === `127.0.0.1:${boundPort}` || hostHeader === `localhost:${boundPort}` || hostHeader === `[::1]:${boundPort}`;
+      if (!hostOk) {
+        sendJson(res, 403, { error: { code: BridgeErrorCode.FORBIDDEN, message: "\u62D2\u7EDD\u975E\u672C\u673A Host \u8BF7\u6C42" } });
+        return;
+      }
+      const url = new URL(req.url ?? "/", `http://${opts.host}:${boundPort}`);
       const path4 = url.pathname;
       const q = url.searchParams;
       if (req.method === "GET" && path4 === "/health") {
@@ -1164,31 +1194,60 @@ async function createBridgeServer(opts) {
       if (req.method === "POST") {
         const raw = await readBody(req, maxBody);
         if (path4 === "/v1/write") {
-          sendJson(res, 200, await service.writeNote(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.writeNote({
+            path: assertStr(body.path, "path"),
+            content: assertStr(body.content, "content"),
+            op: body.op === "append" ? "append" : "write",
+            unique: body.unique === true,
+            overwrite: body.overwrite === true
+          }));
           return;
         }
         if (path4 === "/v1/edit") {
-          sendJson(res, 200, await service.editNote(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.editNote({
+            path: assertStr(body.path, "path"),
+            old_string: assertStr(body.old_string, "old_string"),
+            new_string: assertStr(body.new_string, "new_string"),
+            replace_all: body.replace_all === true
+          }));
           return;
         }
         if (path4 === "/v1/frontmatter") {
-          sendJson(res, 200, await service.updateFrontmatter(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.updateFrontmatter({
+            path: assertStr(body.path, "path"),
+            set: typeof body.set === "object" && body.set !== null ? body.set : void 0,
+            delete: Array.isArray(body.delete) ? body.delete : void 0
+          }));
           return;
         }
         if (path4 === "/v1/rename") {
-          sendJson(res, 200, await service.rename(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.rename({
+            old_path: assertStr(body.old_path, "old_path"),
+            new_path: assertStr(body.new_path, "new_path"),
+            keep_old: body.keep_old === "stub" ? "stub" : "keep"
+          }));
           return;
         }
         if (path4 === "/v1/trash") {
-          sendJson(res, 200, await service.trash(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.trash({ path: assertStr(body.path, "path") }));
           return;
         }
         if (path4 === "/v1/open") {
-          sendJson(res, 200, await service.openNote(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.openNote({ path: assertStr(body.path, "path") }));
           return;
         }
         if (path4 === "/v1/link") {
-          sendJson(res, 200, await service.noteLink(parseJson(raw)));
+          const body = parseJson(raw);
+          sendJson(res, 200, await service.noteLink({
+            path: assertStr(body.path, "path"),
+            source: typeof body.source === "string" ? body.source : void 0
+          }));
           return;
         }
         throw new BridgeError(BridgeErrorCode.NOT_FOUND, `\u672A\u77E5\u7AEF\u70B9 ${req.method} ${path4}`, 404);
@@ -1205,12 +1264,31 @@ async function createBridgeServer(opts) {
         server.once("error", reject);
         server.listen(port, opts.host, () => {
           server.removeListener("error", reject);
+          const addr = server.address();
+          boundPort = typeof addr === "object" && addr !== null ? addr.port : port;
           resolve2();
         });
       });
+      server.on("error", (err) => {
+        console.warn("[dsh-dock] \u6865\u670D\u52A1\u5668\u8FD0\u884C\u671F\u9519\u8BEF", err);
+      });
+      server.requestTimeout = 6e4;
+      server.headersTimeout = 15e3;
+      server.keepAliveTimeout = 5e3;
+      let closed = false;
       return {
-        port,
-        close: () => new Promise((resolve2) => server.close(() => resolve2()))
+        port: boundPort,
+        close: () => new Promise((resolve2) => {
+          if (closed) {
+            resolve2();
+            return;
+          }
+          closed = true;
+          server.closeAllConnections?.();
+          server.close(() => resolve2());
+          const t = setTimeout(() => resolve2(), 1e3);
+          if (typeof t === "object" && t !== null && "unref" in t) t.unref();
+        })
       };
     } catch (err) {
       const code = err.code;
@@ -1246,6 +1324,11 @@ function noteRel(input) {
 }
 function stemOf(rel) {
   return (rel.replace(/\.md$/, "").split("/").pop() ?? "") || rel;
+}
+function isRiskyRegex(q) {
+  if (/\([^()]*[+*{][^()]*\)\s*[+*?{]/.test(q)) return true;
+  if (/\([^()]*\|[^()]*\)\s*[+*]/.test(q)) return true;
+  return false;
 }
 function inIgnoredDir(rel, ignoreDirs) {
   const dirs = rel.split("/").slice(0, -1);
@@ -1534,11 +1617,21 @@ var ObsidianBridgeService = class {
   async search(req) {
     const q = req.q.trim();
     if (q === "") throw new BridgeError(BridgeErrorCode.INVALID_ARGS, "query \u4E0D\u80FD\u4E3A\u7A7A", 400);
+    if (q.length > 256) {
+      throw new BridgeError(BridgeErrorCode.INVALID_ARGS, "query \u8FC7\u957F\uFF08\u6700\u591A 256 \u5B57\u7B26\uFF09\uFF0C\u8BF7\u7B80\u5316\u641C\u7D22\u8BCD", 400);
+    }
     const regex = req.regex ?? false;
     const caseSensitive = req.case_sensitive ?? false;
     const matchAll = req.match_all ?? false;
     let re;
     if (regex) {
+      if (isRiskyRegex(q)) {
+        throw new BridgeError(
+          BridgeErrorCode.REGEX_INVALID,
+          `\u6B63\u5219\u7591\u4F3C\u707E\u96BE\u6027\u56DE\u6EAF\uFF0C\u5DF2\u62D2\u7EDD\uFF1A${q}\uFF08\u8BF7\u7B80\u5316\uFF0C\u6216\u6539\u7528\u666E\u901A\u5173\u952E\u8BCD\u641C\u7D22\uFF09`,
+          400
+        );
+      }
       try {
         re = new RegExp(q, caseSensitive ? "" : "i");
       } catch (err) {
@@ -1851,6 +1944,8 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   statusListeners = /* @__PURE__ */ new Set();
   /** 标记文件写入防抖 timer（窗口 focus 可能高频触发） */
   markerTimer = null;
+  /** 用户已请求停止：start() 中途检测到则杀掉刚拉起的进程、不再接管（M3 竞态） */
+  cancelStart = false;
   /**
    * Obsidian API 桥（B1）：本窗口的 Obsidian 渲染进程内 HTTP 服务，把
    * app.vault / metadataCache / fileManager 的官方解析结果暴露给 DSH 侧
@@ -1860,7 +1955,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   bridgeToken = (0, import_crypto.randomBytes)(24).toString("base64url");
   /** 桥的访问地址（运行中才有值） */
   get bridgeUrl() {
-    return this.bridge ? `http://${this.settings.host}:${this.bridge.port}` : null;
+    return this.bridge ? `http://${this.loopbackHost()}:${this.bridge.port}` : null;
   }
   // ------------------------------------------------------------------ 生命周期
   async onload() {
@@ -1914,6 +2009,9 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     }
   }
   onunload() {
+    if (this.markerTimer) window.clearTimeout(this.markerTimer);
+    this.markerTimer = null;
+    this.cancelStart = true;
     void this.stop();
     void this.stopBridge();
     this.statusListeners.clear();
@@ -1936,7 +2034,16 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   get baseUrl() {
     const vaultRoot = this.vaultRoot();
     const port = computePort(this.settings, vaultRoot);
-    return `http://${this.settings.host}:${port}/`;
+    return `http://${this.loopbackHost()}:${port}/`;
+  }
+  /**
+   * H2：监听 host 一律收敛到回环地址。官方 dsh 拒绝 `--host 0.0.0.0`，
+   * 桥也绝不绑定非回环地址 —— 历史 data.json 可能残留自定义 host
+   * （loadSettings 已归一化，这里再兜底一次，防止 UI 之外的路径改动
+   * settings.host 把 vault API 暴露到局域网）。
+   */
+  loopbackHost() {
+    return this.settings.host === "localhost" ? "localhost" : "127.0.0.1";
   }
   /** 当前 vault 根目录（无则 undefined）。D1：instanceof 取代强转，类型安全 */
   vaultRoot() {
@@ -2000,12 +2107,12 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
       const port = computeBridgePort(vaultRoot);
       const service = new ObsidianBridgeService(this.app, this.manifest.version);
       this.bridge = await createBridgeServer({
-        host: this.settings.host,
+        host: this.loopbackHost(),
         port,
         token: this.bridgeToken,
         service
       });
-      console.info(`[dsh-dock] Obsidian API \u6865\u5DF2\u542F\u52A8: http://${this.settings.host}:${this.bridge.port}\uFF08vault: ${service.info.name}\uFF09`);
+      console.info(`[dsh-dock] Obsidian API \u6865\u5DF2\u542F\u52A8: http://${this.loopbackHost()}:${this.bridge.port}\uFF08vault: ${service.info.name}\uFF09`);
       this.refreshCurrentVaultMarker();
     } catch (err) {
       const msg = err instanceof BridgeError || err instanceof Error ? err.message : String(err);
@@ -2030,6 +2137,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   async start() {
     if (this.starting) return this.status;
     if (this.status.kind === "running") return this.status;
+    this.cancelStart = false;
     this.starting = true;
     this.setStatus({ kind: "starting" });
     try {
@@ -2046,7 +2154,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
         dshBin: this.settings.dshBin,
         nodeBin: this.settings.nodeBin,
         port,
-        host: this.settings.host,
+        host: this.loopbackHost(),
         dshHome,
         // per-vault 配置共享：模型/密钥/主题指回共享 ~/.dsh，只隔离会话。
         ...sharedConfigRoot ? { sharedConfigRoot } : {},
@@ -2073,6 +2181,16 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
           } : {}
         }
       });
+      if (this.cancelStart) {
+        if (result.proc) {
+          try {
+            await stopProcess(result.proc);
+          } catch {
+          }
+        }
+        this.setStatus({ kind: "stopped" });
+        return this.status;
+      }
       this.proc = result.proc ?? null;
       if (result.status.kind === "running" && result.proc && !result.status.attached) {
         if (result.proc.pid != null) {
@@ -2096,6 +2214,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     return this.status;
   }
   async stop() {
+    this.cancelStart = true;
     this.starting = false;
     if (this.proc) {
       await stopProcess(this.proc);
@@ -2162,6 +2281,9 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   async loadSettings() {
     const data = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
+    if (this.settings.host !== "127.0.0.1" && this.settings.host !== "localhost") {
+      this.settings.host = "127.0.0.1";
+    }
     const legacy = data;
     if (legacy?.dshHome && typeof legacy.dshHome === "string" && legacy.dshHome.trim()) {
       this.settings.dshHomeMode = "custom";

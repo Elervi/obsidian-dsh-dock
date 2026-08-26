@@ -10,6 +10,8 @@
  *
  * - 位置固定在 `~/.dsh`（与 dsh-dock 的 DSH_HOME 三档模式无关），任何模式
  *   下 DSH 侧都读得到；
+ * - 安全：标记文件可能携带桥 token（活凭据），目录用 0700、文件用 0600，
+ *   只允许当前用户读写——防止同机其他用户读走 token 后调桥读写整个库；
  * - `activeFile` 是 vault 相对路径（无 `.md` 语义，原样），只在确实有打开的
  *   笔记时写入；DSH 侧的 `vault_current`/`vault_active` 据此从"猜最近活跃库"
  *   升级为"真·当前库 + 当前笔记"；
@@ -58,7 +60,9 @@ export function writeCurrentVaultMarker(
 ): void {
   try {
     const file = currentVaultMarkerPath()
-    fs.mkdirSync(path.dirname(file), { recursive: true })
+    // H1：目录 0700 / 文件 0600 —— 标记文件含桥 token（活凭据），
+    // 默认 0755/0644 会让同机其他用户读走 token，进而调桥读写整个库。
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     const payload: CurrentVaultMarker = { name, path: vaultPath, updatedAt: Date.now() }
     if (activeFile) payload.activeFile = activeFile
     if (bridge) {
@@ -66,8 +70,14 @@ export function writeCurrentVaultMarker(
       payload.bridgeToken = bridge.token
     }
     const tmp = `${file}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2))
+    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2), { mode: 0o600 })
     fs.renameSync(tmp, file)
+    // rename 会保留源文件（tmp）的 0600，这里再兜底一次（覆盖平台/umask 差异）
+    try {
+      fs.chmodSync(file, 0o600)
+    } catch {
+      /* 写入时已指定权限，chmod 失败不阻断 */
+    }
   } catch (err) {
     console.warn('[dsh-dock] 写入 current-vault 标记失败', err)
   }

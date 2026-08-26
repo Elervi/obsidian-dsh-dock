@@ -25,6 +25,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Check committed build artifacts are in sync
+        # L3/O2：src 改了但 main.js / lib/*.cjs 未重新构建并提交时，CI 直接失败，
+        # 防止 Obsidian 实际运行过期 JS（esbuild 输出确定，重复构建应零差异）。
+        run: git diff --exit-code -- main.js lib/
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
