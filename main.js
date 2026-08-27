@@ -1715,6 +1715,23 @@ ${text}`.toLowerCase();
     return { total: hits.length, hits };
   }
   // ------------------------------------------------------------- 写入
+  /**
+   * 确保 rel 的父目录存在：Obsidian 的 vault.create 不会自动建目录，
+   * 父目录缺失时底层 fs 会抛 ENOENT（典型场景：往全新目录写第一篇笔记）。
+   * 逐级 createFolder，已存在的目录跳过（createFolder 对已存在目录会抛错）。
+   */
+  async ensureParentFolder(rel) {
+    const idx = rel.lastIndexOf("/");
+    if (idx <= 0) return;
+    const parts = rel.slice(0, idx).split("/");
+    let cur = "";
+    for (const part of parts) {
+      cur = cur === "" ? part : `${cur}/${part}`;
+      if (!this.app.vault.getAbstractFileByPath(cur)) {
+        await this.app.vault.createFolder(cur);
+      }
+    }
+  }
   async writeNote(req) {
     const rel = noteRel(req.path);
     const existing = this.app.vault.getAbstractFileByPath(rel);
@@ -1739,6 +1756,7 @@ ${text}`.toLowerCase();
           i++;
           candidate = dir !== "" ? `${dir}/${base} ${i}.md` : `${base} ${i}.md`;
         }
+        await this.ensureParentFolder(candidate);
         await this.app.vault.create(candidate, req.content);
         return { path: candidate, operation: "create", bytes: byteLen(req.content) };
       }
@@ -1748,6 +1766,7 @@ ${text}`.toLowerCase();
       await this.app.vault.modify(existing, req.content);
       return { path: rel, operation: "update", bytes: byteLen(req.content) };
     }
+    await this.ensureParentFolder(rel);
     await this.app.vault.create(rel, req.content);
     return { path: rel, operation: "create", bytes: byteLen(req.content) };
   }
