@@ -1847,6 +1847,7 @@ ${text}`.toLowerCase();
       const n = await countRefs(f.path);
       if (n > 0) updated.push({ path: f.path, count: n });
     }
+    await this.ensureParentFolder(newRel);
     await this.app.fileManager.renameFile(oldFile, newRel);
     let oldHandling = "kept";
     if (req.keep_old === "stub") {

@@ -690,6 +690,10 @@ export class ObsidianBridgeService implements BridgeService {
       if (n > 0) updated.push({ path: f.path, count: n })
     }
 
+    // Obsidian 的 renameFile/vault.rename 不会自动创建父目录；目标目录缺失时底层
+    // fs 会抛 ENOENT（同 writeNote 的 create 曾踩过的坑，见 ensureParentFolder）。
+    await this.ensureParentFolder(newRel)
+
     // fileManager.renameFile：Obsidian 按用户「自动更新内部链接」设置原子更新引用
     await this.app.fileManager.renameFile(oldFile, newRel)
 
