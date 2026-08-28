@@ -28,6 +28,8 @@
  *      的首次引导导航才被放行（302 到去掉带 token 的干净地址 + 下发 cookie），
  *      其余一律 403。token 是 24 字节随机，且只出现在插件控制的 iframe src 里，
  *      本机进程/第三方页面拿不到 —— 两者合起来同时挡掉 DNS-rebinding 与冒用。
+ *      cookie 必须用 SameSite=None; Secure（见 panelSetCookie 注释）：SameSite=Lax/Strict
+ *      在跨站子 frame 里不会被发送，否则跨站 iframe 永远 403。
  *
  * 纯 Node、零 Obsidian 依赖，可被 scripts/smoke.mjs 直接 require 验证。
  */
@@ -44,9 +46,21 @@ const SECRET_BYTES = 32
 const AUTH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/
 
-/** 面板门 cookie 的名字与查询参数名（与上游 dsh-auth-* cookie 隔离，互不覆盖） */
+/** 面板门 cookie 的名字前缀（与上游 dsh-auth-* cookie 隔离，互不覆盖）。
+ *  真实名在 panelCookieName() 里按端口打后缀——cookie 按(名,域,路径)区分、不含端口，
+ *  同一 127.0.0.1 上若跑多个代理（多 vault 并存），同名 cookie 会互相覆盖，必须按端口隔离。 */
 const PANEL_COOKIE_PREFIX = 'dsh-dock-panel'
 const PANEL_PARAM = 'panel'
+
+/** 面板门 cookie 名：`dsh-dock-panel_<port>`。端口在代理绑定后唯一，且 Cookie 域不含端口，
+ *  故用端口后缀保证同一 host 上多个代理的 panel cookie 互不冲突。 */
+function panelCookieName(port: number): string {
+  return `${PANEL_COOKIE_PREFIX}_${port}`
+}
+
+/** 鉴权探测的缓存时长：代理创建时一次性探测可能因 dsh web 尚未就绪而误判为「无需鉴权」，
+ *  之后永不注入 cookie（上游 401）。每 PROBE_TTL_MS 探一次，若探测到需鉴权则自动切换为注入。 */
+const PROBE_TTL_MS = 5000
 
 /** 转发到上游时要剔除的逐跳头（保持 HTTP/WS 语义由 Node 管理） */
 const HOP_BY_HOP = new Set([
@@ -151,6 +165,8 @@ export interface WebProxyHandle {
   url: string
   /** 面板门 cookie 的随机 token（插件拿来拼进 iframe src，见 main.ts baseUrl） */
   panelToken: string
+  /** 本代理的 panel cookie 名（`dsh-dock-panel_<port>`，多代理并存时互不冲突） */
+  cookieName: string
   close(): Promise<void>
 }
 
@@ -158,12 +174,19 @@ interface ProxyRuntime {
   authority: string
   targetHost: string
   targetPort: number
-  /** 浏览器会话签名密钥；null = 目标无需 cookie 鉴权（旧版 dsh web），直接透传 */
+  /** 浏览器会话签名密钥；null = 暂判无需 cookie 鉴权（旧版 dsh web），直接透传。
+   *  由 ensureInjectReady 按 PROBE_TTL_MS 惰性复查，探测到需鉴权即改为注入。 */
   secret: Buffer | null
+  /** 凭证库候选路径（供 ensureInjectReady 惰性重新解析密钥） */
+  credentialPaths: readonly string[]
+  /** 上次鉴权探测时间戳（0 = 尚未探测），用于 PROBE_TTL_MS 惰性复查 */
+  authProbedAt: number
   /** 面板门 cookie token（每次 createWebProxy 随机生成） */
   panelToken: string
   host: string
   port: number
+  /** 本代理的 panel cookie 名（按端口后缀，多代理并存时不冲突），绑定后由 panelCookieName 生成 */
+  cookieName: string
   sockets: Set<Duplex>
   agent: http.Agent
 }
@@ -184,6 +207,24 @@ function probeRequiresAuth(host: string, port: number, timeoutMs = 3000): Promis
     })
     req.on('error', () => resolve(false))
   })
+}
+
+/**
+ * 惰性刷新「是否注入 dsh-auth cookie」的决定。创建时一次性探测可能因 dsh web 尚未就绪
+ * 而误判（返回 false → 永不注入 → 上游 401）。此函数按 PROBE_TTL_MS 复查：若探测到目标
+ * 现在需要鉴权，则重新解析密钥并切换到注入模式，自愈该竞态。
+ */
+async function ensureInjectReady(runtime: ProxyRuntime): Promise<void> {
+  const now = Date.now()
+  if (now - runtime.authProbedAt < PROBE_TTL_MS) return
+  runtime.authProbedAt = now
+  const requiresAuth = await probeRequiresAuth(runtime.targetHost, runtime.targetPort)
+  if (requiresAuth) {
+    const secret = resolveBrowserSecret(runtime.credentialPaths)
+    runtime.secret = secret ?? null
+  } else {
+    runtime.secret = null
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +248,7 @@ function hasPanelCookie(runtime: ProxyRuntime, req: http.IncomingMessage): boole
     const eq = part.indexOf('=')
     if (eq === -1) continue
     const key = part.slice(0, eq).trim()
-    if (key === PANEL_COOKIE_PREFIX) {
+    if (key === runtime.cookieName) {
       return tokenEquals(part.slice(eq + 1).trim(), runtime.panelToken)
     }
   }
@@ -223,13 +264,28 @@ function bootstrapLocation(runtime: ProxyRuntime, req: http.IncomingMessage): st
   return tokenEquals(token, runtime.panelToken) ? stripPanelParam(req.url) : null
 }
 
-/** 去掉 URL 里的 `panel` 参数，返回干净路径（对上游隐藏面板 token） */
+/**
+ * 去掉 URL 查询串里的 `panel` 参数，返回干净路径（对上游隐藏面板 token）。
+ * 必须用原始字符串处理而非 URLSearchParams —— URL API 会把查询串重新百分号编码，
+ * 破坏前端资源加载用的 Vite 多包查询（如 `/plugins/??@deepseek-ai/x.js&rev=...`），
+ * 导致上游 404。无 `panel` 参数时按原样返回（避免任何重排）。
+ */
 function stripPanelParam(reqUrl: string): string {
-  if (!reqUrl.includes('?')) return reqUrl
-  const url = new URL(reqUrl, 'http://localhost')
-  url.searchParams.delete(PANEL_PARAM)
-  const qs = url.searchParams.toString()
-  return qs ? `${url.pathname}?${qs}` : url.pathname
+  const qIdx = reqUrl.indexOf('?')
+  if (qIdx === -1) return reqUrl
+  // 判断是否存在 `panel=<...>` 段（首个段可能以前导 '?' 开头，如 `??@`）
+  const query = reqUrl.slice(qIdx) // 含前导 '?'
+  const hasPanel = query.split('&').some((segment) => {
+    const key = segment.replace(/^\?/u, '').split('=')[0].trim()
+    return key === PANEL_PARAM
+  })
+  if (!hasPanel) return reqUrl
+  const pathPart = reqUrl.slice(0, qIdx)
+  const kept = query
+    .split('&')
+    .map((s) => s.replace(/^\?/u, ''))
+    .filter((s) => s.split('=')[0].trim() !== PANEL_PARAM)
+  return kept.length > 0 ? `${pathPart}?${kept.join('&')}` : pathPart
 }
 
 /** 入站 cookie 头可能是数组（多个同名头），统一成字符串 */
@@ -238,19 +294,26 @@ function cookieString(v: string | string[] | undefined): string | undefined {
   return v
 }
 
-/** 去掉 cookie 头里的面板 cookie（上游不该看到 panel token） */
-function stripPanelCookie(cookieHeader: string | undefined): string | undefined {
+/** 去掉 cookie 头里的本代理面板 cookie（上游不该看到 panel token），按运行时 cookie 名匹配 */
+function stripPanelCookie(cookieHeader: string | undefined, panelCookieName: string): string | undefined {
   if (cookieHeader === undefined) return undefined
   const kept = cookieHeader.split(';').filter((part) => {
     const eq = part.indexOf('=')
     const key = eq === -1 ? part : part.slice(0, eq)
-    return key.trim() !== PANEL_COOKIE_PREFIX
+    return key.trim() !== panelCookieName
   })
   return kept.length > 0 ? kept.map((p) => p.trim()).join('; ') : undefined
 }
 
 function panelSetCookie(runtime: ProxyRuntime): string {
-  return `${PANEL_COOKIE_PREFIX}=${runtime.panelToken}; HttpOnly; SameSite=Lax; Path=/`
+  // C1 修复点：面板门 cookie 必须用 SameSite=None 才能被 Obsidian 的跨站 iframe
+  // （app://obsidian.md → http://127.0.0.1:<port>）在跳转跟随与 /api、WS 请求里真正
+  // 发送。SameSite=Lax/Strict 只在顶层跨站导航时发，跨站子 frame 永不发送，会被面板门
+  // 403（webProxy: 缺少面板鉴权 cookie）。Chromium 把回环地址视为潜在可信来源，允许在
+  // http://127.0.0.1 上存储并发送 Secure cookie，故取 None; Secure。安全不变：token 仍
+  // 是 24 字节随机且只能经 `?panel=` 引导获得，本机进程/curl 拿不到；Host 头校验仍挡
+  // DNS-rebinding。
+  return `${runtime.cookieName}=${runtime.panelToken}; HttpOnly; SameSite=None; Secure; Path=/`
 }
 
 function writeDenied(res: http.ServerResponse, message: string): void {
@@ -284,14 +347,24 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
     targetHost: opts.targetHost,
     targetPort: opts.targetPort,
     secret: injectSecret,
+    credentialPaths: opts.credentialPaths,
+    // 初始探测仅作 fail-fast；authProbedAt=0 让首个请求重新探测，自愈「创建时误判无需鉴权」
+    authProbedAt: 0,
     panelToken,
     host: opts.host,
     port: 0,
+    cookieName: '', // 绑定后由 panelCookieName(port) 赋值；请求只会在绑定后到达
     sockets: new Set(),
     agent: new http.Agent({ keepAlive: true, maxSockets: 256 }),
   }
 
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
+    try {
+      await ensureInjectReady(runtime)
+    } catch {
+      writeDenied(res, '鉴权探测失败')
+      return
+    }
     if (!hostOk(runtime, req)) {
       writeDenied(res, '拒绝非本机 Host 请求')
       return
@@ -310,7 +383,10 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
     }
     writeDenied(res, '缺少面板鉴权 cookie')
   })
-  server.on('upgrade', (req, socket, head) => handleUpgrade(runtime, req, socket, head))
+  server.on('upgrade', (req, socket, head) => {
+    void ensureInjectReady(runtime).then(() => handleUpgrade(runtime, req, socket, head))
+      .catch(() => socket.end('HTTP/1.1 500 Internal Server Error\r\n\r\n'))
+  })
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -322,12 +398,14 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
   const address = server.address()
   const port = typeof address === 'object' && address !== null ? address.port : opts.port
   runtime.port = port
+  runtime.cookieName = panelCookieName(port)
 
   return {
     host: opts.host,
     port,
     url: `http://${opts.host}:${String(port)}/`,
     panelToken,
+    cookieName: runtime.cookieName,
     close: () => closeProxy(server, runtime),
   }
 }
@@ -390,7 +468,7 @@ function buildUpstreamHeaders(runtime: ProxyRuntime, incoming: http.IncomingHttp
     headers.cookie = cookieHeader(runtime.secret, runtime.authority)
   } else {
     // 无鉴权目标：透传入站 cookie，但剥掉面板门 cookie（token 不进上游）
-    const stripped = stripPanelCookie(cookieString(headers.cookie))
+    const stripped = stripPanelCookie(cookieString(headers.cookie), runtime.cookieName)
     if (stripped === undefined) delete headers.cookie
     else headers.cookie = stripped
   }
@@ -414,7 +492,7 @@ function buildUpgradeHeaders(runtime: ProxyRuntime, incoming: http.IncomingHttpH
   if (runtime.secret !== null) {
     headers.cookie = cookieHeader(runtime.secret, runtime.authority)
   } else {
-    const stripped = stripPanelCookie(cookieString(headers.cookie))
+    const stripped = stripPanelCookie(cookieString(headers.cookie), runtime.cookieName)
     if (stripped === undefined) delete headers.cookie
     else headers.cookie = stripped
   }

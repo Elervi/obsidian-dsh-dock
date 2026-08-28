@@ -114,6 +114,7 @@ async function main() {
     credentialPaths: [credPath],
   })
   const at = authProxy.panelToken
+  const acn = authProxy.cookieName // 面板门 cookie 名（按端口打后缀，多代理并存不冲突）
   const aPort = authProxy.port
   console.log(`\n=== 带认证上游 (${upstreamAuth.port}) / 代理 :${aPort} ===`)
 
@@ -132,24 +133,24 @@ async function main() {
   // 4. 引导:正确 ?panel=<token> 且无 cookie -> 302 + Set-Cookie(dsh-dock-panel)
   r = await rawReq(aPort, { path: `/?panel=${at}` })
   check('引导 ?panel=token -> 302', r.status === 302, `status=${r.status}`)
-  check('引导下发 panel cookie', /dsh-dock-panel=/.test(r.headers['set-cookie'] ?? ''), `set-cookie=${r.headers['set-cookie']}`)
+  check('引导下发 panel cookie', /dsh-dock-panel_/.test(r.headers['set-cookie'] ?? ''), `set-cookie=${r.headers['set-cookie']}`)
   check('引导 302 到干净地址(不带 token)', (r.headers.location ?? '').indexOf('panel') === -1, `location=${r.headers.location}`)
 
   // 5. 带 panel cookie 的正常请求 -> 转发到上游(注入 dsh-auth cookie => 200 且 content 为 AUTH_OK)
-  r = await rawReq(aPort, { path: '/', headers: { Cookie: `dsh-dock-panel=${at}` } })
+  r = await rawReq(aPort, { path: '/', headers: { Cookie: `${acn}=${at}` } })
   check('带 panel cookie 访问 / -> 200', r.status === 200, `status=${r.status}`)
   check('上游收到注入的 dsh-auth cookie(返回 AUTH_OK)', r.body.includes('AUTH_OK'), `body=${r.body.slice(0,60)}`)
 
   // 6. 带 panel cookie 的 /api 请求 -> 200,且上游收到的路径不含 panel 参数
-  r = await rawReq(aPort, { path: `/api/foo?panel=${at}&x=1`, headers: { Cookie: `dsh-dock-panel=${at}` } })
+  r = await rawReq(aPort, { path: `/api/foo?panel=${at}&x=1`, headers: { Cookie: `${acn}=${at}` } })
   check('/api 转发时剥掉 panel 参数', r.body.includes('path=/api/foo?x=1'), `body=${r.body.slice(0,80)}`)
 
   // 7. WebSocket 门:无 cookie -> 403;带 cookie -> 101(且上游收到注入的 dsh-auth cookie)
   let ws = await wsHandshake(aPort, {})
   check('WS 无 panel cookie 被拒 403', ws === '403', `status=${ws}`)
-  ws = await wsHandshake(aPort, { host: `evil.example:${aPort}`, cookie: `dsh-dock-panel=${at}` })
+  ws = await wsHandshake(aPort, { host: `evil.example:${aPort}`, cookie: `${acn}=${at}` })
   check('WS 伪造 Host 被拒 403', ws === '403', `status=${ws}`)
-  ws = await wsHandshake(aPort, { cookie: `dsh-dock-panel=${at}` })
+  ws = await wsHandshake(aPort, { cookie: `${acn}=${at}` })
   check('WS 带 panel cookie -> 101(注入 dsh-auth cookie 后握手成功)', ws === '101', `status=${ws}`)
 
   // ---------- 不带认证上游 ----------
@@ -159,6 +160,7 @@ async function main() {
     credentialPaths: [credPath],
   })
   const nt = naProxy.panelToken
+  const ncn = naProxy.cookieName
   const nPort = naProxy.port
   console.log(`\n=== 不带认证上游 (${upstreamNoauth.port}) / 代理 :${nPort} ===`)
 
@@ -169,10 +171,10 @@ async function main() {
   // 2. 引导 302
   r = await rawReq(nPort, { path: `/?panel=${nt}` })
   check('引导 ?panel=token -> 302', r.status === 302, `status=${r.status}`)
-  check('引导下发 panel cookie', /dsh-dock-panel=/.test(r.headers['set-cookie'] ?? ''))
+  check('引导下发 panel cookie', /dsh-dock-panel_/.test(r.headers['set-cookie'] ?? ''))
 
   // 3. 带 panel cookie 正常请求 -> 200 (NOAUTH_OK),且上游看不到 panel cookie
-  r = await rawReq(nPort, { path: '/', headers: { Cookie: `dsh-dock-panel=${nt}; other=1` } })
+  r = await rawReq(nPort, { path: '/', headers: { Cookie: `${ncn}=${nt}; other=1` } })
   check('带 panel cookie 访问 / -> 200', r.status === 200, `status=${r.status}`)
   check('上游响应 NOAUTH_OK', r.body.includes('NOAUTH_OK'), `body=${r.body.slice(0,60)}`)
   check('上游看不到面板 cookie(dsh-dock-panel 被剥掉)', !r.body.includes('dsh-dock-panel'), `cookie=${(r.body.match(/cookie=(.*?)</)||[])[1]}`)
@@ -181,7 +183,7 @@ async function main() {
   // 4. WebSocket 门(无鉴权上游):无 cookie -> 403;带 cookie -> 101
   let nws = await wsHandshake(nPort, {})
   check('WS 无 panel cookie 被拒 403', nws === '403', `status=${nws}`)
-  nws = await wsHandshake(nPort, { cookie: `dsh-dock-panel=${nt}` })
+  nws = await wsHandshake(nPort, { cookie: `${ncn}=${nt}` })
   check('WS 带 panel cookie -> 101(无鉴权上游透传)', nws === '101', `status=${nws}`)
 
   console.log(`\n${failed === 0 ? 'ALL PASS ✅' : `${failed} 项失败 ✗`}`)
