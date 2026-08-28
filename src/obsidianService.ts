@@ -610,16 +610,20 @@ export class ObsidianBridgeService implements BridgeService {
     const file = this.fileOf(req.path)
     if (req.old_string === '') throw new BridgeError(BridgeErrorCode.INVALID_ARGS, 'old_string 不能为空', 400)
     const current = await this.app.vault.cachedRead(file)
-    const oldS = req.old_string.replaceAll('\r\n', '\n')
-    const norm = current.replaceAll('\r\n', '\n')
-    const count = norm.split(oldS).length - 1
+    // M1（CRLF 保真）：在原文上替换，而不是先把整个文件归一化成 LF 再写回。
+    // 把 old/new 的行尾统一到文件实际采用的 EOL，这样匹配项能命中、未触及的行
+    // 保持原有 \r\n，不会一次编辑就把整篇 CRLF 笔记改写成 LF。
+    const eol = current.includes('\r\n') ? '\r\n' : '\n'
+    const oldInFile = req.old_string.replaceAll(/\r?\n/g, eol)
+    const newInFile = req.new_string.replaceAll(/\r?\n/g, eol)
+    const count = current.split(oldInFile).length - 1
     if (count === 0) {
       throw new BridgeError(BridgeErrorCode.EDIT_NOT_FOUND, `在 ${file.path} 中未找到与 old_string 精确匹配的文本；编辑按字面匹配，请先 vault_read_note 核对原文（注意换行与首尾空白）`, 404)
     }
     if (count > 1 && !req.replace_all) {
       throw new BridgeError(BridgeErrorCode.AMBIGUOUS_EDIT, `old_string 在 ${file.path} 中出现多次（默认只允许一次精确替换）；请提供更长上下文，或设 replace_all: true`, 400)
     }
-    const after = req.replace_all ? norm.split(oldS).join(req.new_string) : norm.replace(oldS, req.new_string)
+    const after = req.replace_all ? current.split(oldInFile).join(newInFile) : current.replace(oldInFile, newInFile)
     await this.app.vault.modify(file, after)
     return { path: file.path, before: current, after, matches: count }
   }

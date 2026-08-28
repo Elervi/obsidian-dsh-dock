@@ -643,10 +643,10 @@ var DshDockSettingsTab = class extends import_obsidian.PluginSettingTab {
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian.Setting(containerEl).setName("\u76D1\u542C\u7AEF\u53E3\uFF08\u57FA\u51C6\uFF09").setDesc("\u5B98\u65B9\u9ED8\u8BA4 3080\u3002shared/custom \u6A21\u5F0F\u76F4\u63A5\u4F7F\u7528\uFF1Bper-vault \u6A21\u5F0F\u5728\u6B64\u57FA\u7840\u4E0A\u6309 vault \u6D3E\u751F\u72EC\u7ACB\u7AEF\u53E3\uFF08\u6BCF vault \u72EC\u5360\uFF0C\u4F1A\u8BDD\u4E92\u4E0D\u53EF\u89C1\uFF09\u3002").addText(
+    new import_obsidian.Setting(containerEl).setName("\u76D1\u542C\u7AEF\u53E3\uFF08\u57FA\u51C6\uFF09").setDesc("\u5B98\u65B9\u9ED8\u8BA4 3080\uFF081\u201365535\uFF1B\u4E0D\u7528 0=\u201COS \u5206\u914D\u201D\uFF0Clauncher \u65E0\u9700\u63A2\u6D4B\u5B50\u8FDB\u7A0B\u5B9E\u9645\u7AEF\u53E3\uFF09\u3002shared/custom \u6A21\u5F0F\u76F4\u63A5\u4F7F\u7528\uFF1Bper-vault \u6A21\u5F0F\u5728\u6B64\u57FA\u7840\u4E0A\u6309 vault \u6D3E\u751F\u72EC\u7ACB\u7AEF\u53E3\uFF08\u6BCF vault \u72EC\u5360\uFF0C\u4F1A\u8BDD\u4E92\u4E0D\u53EF\u89C1\uFF09\u3002").addText(
       (t) => t.setPlaceholder("3080").setValue(String(this.plugin.settings.port)).onChange(async (v) => {
         const n = Number(v.trim());
-        this.plugin.settings.port = Number.isInteger(n) && n >= 0 && n <= 65535 ? n : 3080;
+        this.plugin.settings.port = Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 3080;
         await this.plugin.saveSettings();
         this.netPreview.textContent = this.describeNet();
       })
@@ -1020,6 +1020,12 @@ function tokenEquals(a, b) {
     return false;
   }
 }
+function isLoopbackHost(host) {
+  if (host === "localhost" || host === "::1") return true;
+  const m = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!m) return false;
+  return m.slice(1).every((n) => Number(n) <= 255);
+}
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -1098,6 +1104,9 @@ function requireQuery(params, key) {
 async function createBridgeServer(opts) {
   const { service } = opts;
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
+  if (!isLoopbackHost(opts.host)) {
+    throw new Error(`\u6865\u5FC5\u987B\u53EA\u7ED1\u5B9A\u56DE\u73AF\u5730\u5740\uFF08127.0.0.1 / localhost / ::1\uFF09\uFF0C\u62D2\u7EDD\u7ED1\u5230 ${opts.host}`);
+  }
   let boundPort = opts.port;
   const server = (0, import_node_http.createServer)(async (req, res) => {
     try {
@@ -1108,8 +1117,8 @@ async function createBridgeServer(opts) {
         return;
       }
       const hostHeader = (req.headers.host ?? "").toLowerCase();
-      const hostOk = hostHeader === `127.0.0.1:${boundPort}` || hostHeader === `localhost:${boundPort}` || hostHeader === `[::1]:${boundPort}`;
-      if (!hostOk) {
+      const hostOk2 = hostHeader === `127.0.0.1:${boundPort}` || hostHeader === `localhost:${boundPort}` || hostHeader === `[::1]:${boundPort}`;
+      if (!hostOk2) {
         sendJson(res, 403, { error: { code: BridgeErrorCode.FORBIDDEN, message: "\u62D2\u7EDD\u975E\u672C\u673A Host \u8BF7\u6C42" } });
         return;
       }
@@ -1311,6 +1320,8 @@ var COOKIE_PAYLOAD_VERSION = 1;
 var SECRET_BYTES = 32;
 var AUTH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1e3;
 var BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/;
+var PANEL_COOKIE_PREFIX = "dsh-dock-panel";
+var PANEL_PARAM = "panel";
 var HOP_BY_HOP = /* @__PURE__ */ new Set([
   "connection",
   "keep-alive",
@@ -1327,6 +1338,15 @@ function decodeBase64Url(value) {
   const pad = "=".repeat((4 - value.length % 4) % 4);
   const decoded = Buffer.from(value.replaceAll("-", "+").replaceAll("_", "/") + pad, "base64");
   return encodeBase64Url(decoded) === value ? decoded : void 0;
+}
+function tokenEquals2(a, b) {
+  try {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    return ab.length === bb.length && (0, import_node_crypto2.timingSafeEqual)(ab, bb);
+  } catch {
+    return false;
+  }
 }
 function authorityOf(host, port) {
   return new URL(`http://${host}:${String(port)}`).host;
@@ -1379,6 +1399,57 @@ function probeRequiresAuth(host, port, timeoutMs = 3e3) {
     req.on("error", () => resolve2(false));
   });
 }
+function hostOk(runtime, req) {
+  const hostHeader = (req.headers.host ?? "").toLowerCase();
+  return hostHeader === `127.0.0.1:${runtime.port}` || hostHeader === `localhost:${runtime.port}` || hostHeader === `[::1]:${runtime.port}`;
+}
+function hasPanelCookie(runtime, req) {
+  const cookie = req.headers.cookie;
+  if (cookie === void 0) return false;
+  for (const part of cookie.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    if (key === PANEL_COOKIE_PREFIX) {
+      return tokenEquals2(part.slice(eq + 1).trim(), runtime.panelToken);
+    }
+  }
+  return false;
+}
+function bootstrapLocation(runtime, req) {
+  if (req.url === void 0) return null;
+  const url = new URL(req.url, `http://${runtime.host}:${runtime.port}`);
+  const token = url.searchParams.get(PANEL_PARAM);
+  if (token === null) return null;
+  return tokenEquals2(token, runtime.panelToken) ? stripPanelParam(req.url) : null;
+}
+function stripPanelParam(reqUrl) {
+  if (!reqUrl.includes("?")) return reqUrl;
+  const url = new URL(reqUrl, "http://localhost");
+  url.searchParams.delete(PANEL_PARAM);
+  const qs = url.searchParams.toString();
+  return qs ? `${url.pathname}?${qs}` : url.pathname;
+}
+function cookieString(v) {
+  if (Array.isArray(v)) return v.join("; ");
+  return v;
+}
+function stripPanelCookie(cookieHeader2) {
+  if (cookieHeader2 === void 0) return void 0;
+  const kept = cookieHeader2.split(";").filter((part) => {
+    const eq = part.indexOf("=");
+    const key = eq === -1 ? part : part.slice(0, eq);
+    return key.trim() !== PANEL_COOKIE_PREFIX;
+  });
+  return kept.length > 0 ? kept.map((p) => p.trim()).join("; ") : void 0;
+}
+function panelSetCookie(runtime) {
+  return `${PANEL_COOKIE_PREFIX}=${runtime.panelToken}; HttpOnly; SameSite=Lax; Path=/`;
+}
+function writeDenied(res, message) {
+  res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+  res.end(`webProxy: ${message}`);
+}
 async function createWebProxy(opts) {
   const authority = authorityOf(opts.targetHost, opts.targetPort);
   const requiresAuth = await probeRequiresAuth(opts.targetHost, opts.targetPort);
@@ -1388,15 +1459,37 @@ async function createWebProxy(opts) {
       `webProxy: \u76EE\u6807 dsh web \u9700\u8981\u6D4F\u89C8\u5668\u9274\u6743\uFF0C\u4F46\u672A\u627E\u5230\u4F1A\u8BDD\u7B7E\u540D\u5BC6\u94A5\uFF08\u8BD5\u8FC7: ${JSON.stringify(opts.credentialPaths)}\uFF09\u3002\u8BF7\u786E\u8BA4\u51ED\u8BC1\u5E93\u8DEF\u5F84\uFF0C\u6216\u6539\u7528\u300C\u5728\u7CFB\u7EDF\u6D4F\u89C8\u5668\u4E2D\u6253\u5F00\u300D`
     );
   }
+  const injectSecret = requiresAuth ? secret : null;
+  const panelToken = (0, import_node_crypto2.randomBytes)(24).toString("base64url");
   const runtime = {
     authority,
     targetHost: opts.targetHost,
     targetPort: opts.targetPort,
-    secret: secret ?? null,
+    secret: injectSecret,
+    panelToken,
+    host: opts.host,
+    port: 0,
     sockets: /* @__PURE__ */ new Set(),
     agent: new http2.Agent({ keepAlive: true, maxSockets: 256 })
   };
-  const server = http2.createServer((req, res) => handleRequest(runtime, req, res));
+  const server = http2.createServer((req, res) => {
+    if (!hostOk(runtime, req)) {
+      writeDenied(res, "\u62D2\u7EDD\u975E\u672C\u673A Host \u8BF7\u6C42");
+      return;
+    }
+    const path4 = stripPanelParam(req.url ?? "/");
+    if (hasPanelCookie(runtime, req)) {
+      proxyToUpstream(runtime, req, res, path4);
+      return;
+    }
+    const location = bootstrapLocation(runtime, req);
+    if (location !== null) {
+      res.writeHead(302, { Location: location, "Set-Cookie": panelSetCookie(runtime), "Cache-Control": "no-store" });
+      res.end();
+      return;
+    }
+    writeDenied(res, "\u7F3A\u5C11\u9762\u677F\u9274\u6743 cookie");
+  });
   server.on("upgrade", (req, socket, head) => handleUpgrade(runtime, req, socket, head));
   await new Promise((resolve2, reject) => {
     server.once("error", reject);
@@ -1407,21 +1500,23 @@ async function createWebProxy(opts) {
   });
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : opts.port;
+  runtime.port = port;
   return {
     host: opts.host,
     port,
     url: `http://${opts.host}:${String(port)}/`,
+    panelToken,
     close: () => closeProxy(server, runtime)
   };
 }
-function handleRequest(runtime, req, res) {
+function proxyToUpstream(runtime, req, res, path4) {
   const headers = buildUpstreamHeaders(runtime, req.headers);
   const upstream = http2.request(
     {
       host: runtime.targetHost,
       port: runtime.targetPort,
       method: req.method,
-      path: req.url,
+      path: path4,
       headers,
       agent: runtime.agent
     },
@@ -1459,7 +1554,13 @@ function buildUpstreamHeaders(runtime, incoming) {
     headers[lower] = value;
   }
   headers.host = runtime.authority;
-  if (runtime.secret !== null) headers.cookie = cookieHeader(runtime.secret, runtime.authority);
+  if (runtime.secret !== null) {
+    headers.cookie = cookieHeader(runtime.secret, runtime.authority);
+  } else {
+    const stripped = stripPanelCookie(cookieString(headers.cookie));
+    if (stripped === void 0) delete headers.cookie;
+    else headers.cookie = stripped;
+  }
   if (headers.origin !== void 0) headers.origin = `http://${runtime.authority}`;
   headers["sec-fetch-site"] = "same-origin";
   return headers;
@@ -1473,16 +1574,28 @@ function buildUpgradeHeaders(runtime, incoming) {
     headers[lower] = value;
   }
   headers.host = runtime.authority;
-  if (runtime.secret !== null) headers.cookie = cookieHeader(runtime.secret, runtime.authority);
+  if (runtime.secret !== null) {
+    headers.cookie = cookieHeader(runtime.secret, runtime.authority);
+  } else {
+    const stripped = stripPanelCookie(cookieString(headers.cookie));
+    if (stripped === void 0) delete headers.cookie;
+    else headers.cookie = stripped;
+  }
   if (headers.origin !== void 0) headers.origin = `http://${runtime.authority}`;
   headers["sec-fetch-site"] = "same-origin";
   return headers;
 }
 function handleUpgrade(runtime, req, socket, head) {
+  if (!hostOk(runtime, req) || !hasPanelCookie(runtime, req)) {
+    socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+    socket.destroy();
+    return;
+  }
+  const cleanUrl = stripPanelParam(req.url ?? "/");
   runtime.sockets.add(socket);
   socket.on("close", () => runtime.sockets.delete(socket));
   const headers = buildUpgradeHeaders(runtime, req.headers);
-  const lines = [`${req.method} ${req.url} HTTP/1.1`];
+  const lines = [`${req.method} ${cleanUrl} HTTP/1.1`];
   for (const [key, value] of Object.entries(headers)) {
     if (value === void 0) continue;
     lines.push(`${key}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
@@ -1991,16 +2104,17 @@ ${text}`.toLowerCase();
     const file = this.fileOf(req.path);
     if (req.old_string === "") throw new BridgeError(BridgeErrorCode.INVALID_ARGS, "old_string \u4E0D\u80FD\u4E3A\u7A7A", 400);
     const current = await this.app.vault.cachedRead(file);
-    const oldS = req.old_string.replaceAll("\r\n", "\n");
-    const norm = current.replaceAll("\r\n", "\n");
-    const count = norm.split(oldS).length - 1;
+    const eol = current.includes("\r\n") ? "\r\n" : "\n";
+    const oldInFile = req.old_string.replaceAll(/\r?\n/g, eol);
+    const newInFile = req.new_string.replaceAll(/\r?\n/g, eol);
+    const count = current.split(oldInFile).length - 1;
     if (count === 0) {
       throw new BridgeError(BridgeErrorCode.EDIT_NOT_FOUND, `\u5728 ${file.path} \u4E2D\u672A\u627E\u5230\u4E0E old_string \u7CBE\u786E\u5339\u914D\u7684\u6587\u672C\uFF1B\u7F16\u8F91\u6309\u5B57\u9762\u5339\u914D\uFF0C\u8BF7\u5148 vault_read_note \u6838\u5BF9\u539F\u6587\uFF08\u6CE8\u610F\u6362\u884C\u4E0E\u9996\u5C3E\u7A7A\u767D\uFF09`, 404);
     }
     if (count > 1 && !req.replace_all) {
       throw new BridgeError(BridgeErrorCode.AMBIGUOUS_EDIT, `old_string \u5728 ${file.path} \u4E2D\u51FA\u73B0\u591A\u6B21\uFF08\u9ED8\u8BA4\u53EA\u5141\u8BB8\u4E00\u6B21\u7CBE\u786E\u66FF\u6362\uFF09\uFF1B\u8BF7\u63D0\u4F9B\u66F4\u957F\u4E0A\u4E0B\u6587\uFF0C\u6216\u8BBE replace_all: true`, 400);
     }
-    const after = req.replace_all ? norm.split(oldS).join(req.new_string) : norm.replace(oldS, req.new_string);
+    const after = req.replace_all ? current.split(oldInFile).join(newInFile) : current.replace(oldInFile, newInFile);
     await this.app.vault.modify(file, after);
     return { path: file.path, before: current, after, matches: count };
   }
@@ -2276,7 +2390,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     return this.proc;
   }
   get baseUrl() {
-    if (this.webProxy) return this.webProxy.url;
+    if (this.webProxy) return this.webProxy.url + "?panel=" + this.webProxy.panelToken;
     const vaultRoot = this.vaultRoot();
     const port = computePort(this.settings, vaultRoot);
     return `http://${this.loopbackHost()}:${port}/`;
@@ -2464,6 +2578,17 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
           this.setStatus({ kind: "error", message: `\u9762\u677F\u9274\u6743\u4EE3\u7406\u542F\u52A8\u5931\u8D25: ${msg}` });
           return this.status;
         }
+        if (this.cancelStart) {
+          await this.stopWebProxy();
+          if (result.proc) {
+            try {
+              await stopProcess(result.proc);
+            } catch {
+            }
+          }
+          this.setStatus({ kind: "stopped" });
+          return this.status;
+        }
       }
       this.setStatus(result.status);
       if (result.status.kind === "error") {
@@ -2588,6 +2713,9 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data ?? {});
     if (this.settings.host !== "127.0.0.1" && this.settings.host !== "localhost") {
       this.settings.host = "127.0.0.1";
+    }
+    if (!Number.isInteger(this.settings.port) || this.settings.port < 1 || this.settings.port > 65535) {
+      this.settings.port = DEFAULT_SETTINGS.port;
     }
     const legacy = data;
     if (legacy?.dshHome && typeof legacy.dshHome === "string" && legacy.dshHome.trim()) {

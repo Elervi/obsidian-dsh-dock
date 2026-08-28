@@ -17,10 +17,22 @@
  * 兼容旧版：若目标 dsh web 无需鉴权（对裸 `/` 返回 200、没有浏览器会话密钥），
  * 代理直接透传、不注入 cookie —— 新旧版本都能用。
  *
+ * 访问控制（C1）：代理自身是一条「打开即得已认证会话」的门户，任何本机进程 /
+ * DNS-rebinding 页面都能 `curl http://127.0.0.1:<代理端口>/` 拿到完整 agent。
+ * 本代理在转发之外加两道入口校验，谁都不能绕过：
+ *   1) Host 头校验（对齐 bridgeServer.ts:160-170）：只接受 `127.0.0.1/<localhost>/[::1]:<端口>`，
+ *      挡掉 DNS-rebinding 与非回环 Host（浏览器对 127.0.0.1 的请求 Host 一定是回环）。
+ *   2) 面板 cookie 门：每次 `createWebProxy` 生成一个随机 `dsh-dock-panel` token
+ *      （经 `WebProxyHandle.panelToken` 交给插件，再拼进面板 iframe 的 src，见
+ *      main.ts `baseUrl`）。无有效 cookie 的请求，只有携带正确 `?panel=<token>`
+ *      的首次引导导航才被放行（302 到去掉带 token 的干净地址 + 下发 cookie），
+ *      其余一律 403。token 是 24 字节随机，且只出现在插件控制的 iframe src 里，
+ *      本机进程/第三方页面拿不到 —— 两者合起来同时挡掉 DNS-rebinding 与冒用。
+ *
  * 纯 Node、零 Obsidian 依赖，可被 scripts/smoke.mjs 直接 require 验证。
  */
 
-import { createHash, createHmac } from 'node:crypto'
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as http from 'node:http'
 import * as net from 'node:net'
@@ -31,6 +43,10 @@ const COOKIE_PAYLOAD_VERSION = 1
 const SECRET_BYTES = 32
 const AUTH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
 const BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/
+
+/** 面板门 cookie 的名字与查询参数名（与上游 dsh-auth-* cookie 隔离，互不覆盖） */
+const PANEL_COOKIE_PREFIX = 'dsh-dock-panel'
+const PANEL_PARAM = 'panel'
 
 /** 转发到上游时要剔除的逐跳头（保持 HTTP/WS 语义由 Node 管理） */
 const HOP_BY_HOP = new Set([
@@ -54,6 +70,17 @@ function decodeBase64Url(value: string): Buffer | undefined {
   const pad = '='.repeat((4 - (value.length % 4)) % 4)
   const decoded = Buffer.from(value.replaceAll('-', '+').replaceAll('_', '/') + pad, 'base64')
   return encodeBase64Url(decoded) === value ? decoded : undefined
+}
+
+/** 常量时间比较（对齐 bridgeServer.tokenEquals）：长度不同或内容不同都返回 false */
+function tokenEquals(a: string, b: string): boolean {
+  try {
+    const ab = Buffer.from(a)
+    const bb = Buffer.from(b)
+    return ab.length === bb.length && timingSafeEqual(ab, bb)
+  } catch {
+    return false
+  }
 }
 
 /** 规范化 authority（与官方 requestAuthority 一致）：`new URL('http://<host>:<port>').host` */
@@ -122,6 +149,8 @@ export interface WebProxyHandle {
   /** 实际绑定端口（port=0 时由 OS 分配） */
   port: number
   url: string
+  /** 面板门 cookie 的随机 token（插件拿来拼进 iframe src，见 main.ts baseUrl） */
+  panelToken: string
   close(): Promise<void>
 }
 
@@ -131,6 +160,10 @@ interface ProxyRuntime {
   targetPort: number
   /** 浏览器会话签名密钥；null = 目标无需 cookie 鉴权（旧版 dsh web），直接透传 */
   secret: Buffer | null
+  /** 面板门 cookie token（每次 createWebProxy 随机生成） */
+  panelToken: string
+  host: string
+  port: number
   sockets: Set<Duplex>
   agent: http.Agent
 }
@@ -153,6 +186,78 @@ function probeRequiresAuth(host: string, port: number, timeoutMs = 3000): Promis
   })
 }
 
+// ---------------------------------------------------------------------------
+// 面板门：Host 头校验 + panel cookie 门（C1）。只在入口挡住无关客户端，不改变
+// 上游鉴权注入决定（secret === null 透传 / 注入 dsh-auth cookie 的分支原样保留）。
+// ---------------------------------------------------------------------------
+
+function hostOk(runtime: ProxyRuntime, req: http.IncomingMessage): boolean {
+  const hostHeader = (req.headers.host ?? '').toLowerCase()
+  return (
+    hostHeader === `127.0.0.1:${runtime.port}` ||
+    hostHeader === `localhost:${runtime.port}` ||
+    hostHeader === `[::1]:${runtime.port}`
+  )
+}
+
+function hasPanelCookie(runtime: ProxyRuntime, req: http.IncomingMessage): boolean {
+  const cookie = req.headers.cookie
+  if (cookie === undefined) return false
+  for (const part of cookie.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq === -1) continue
+    const key = part.slice(0, eq).trim()
+    if (key === PANEL_COOKIE_PREFIX) {
+      return tokenEquals(part.slice(eq + 1).trim(), runtime.panelToken)
+    }
+  }
+  return false
+}
+
+/** 若请求携带正确 `?panel=<token>`，返回去掉该参数的干净路径，用于引导（302 + 下发 cookie） */
+function bootstrapLocation(runtime: ProxyRuntime, req: http.IncomingMessage): string | null {
+  if (req.url === undefined) return null
+  const url = new URL(req.url, `http://${runtime.host}:${runtime.port}`)
+  const token = url.searchParams.get(PANEL_PARAM)
+  if (token === null) return null
+  return tokenEquals(token, runtime.panelToken) ? stripPanelParam(req.url) : null
+}
+
+/** 去掉 URL 里的 `panel` 参数，返回干净路径（对上游隐藏面板 token） */
+function stripPanelParam(reqUrl: string): string {
+  if (!reqUrl.includes('?')) return reqUrl
+  const url = new URL(reqUrl, 'http://localhost')
+  url.searchParams.delete(PANEL_PARAM)
+  const qs = url.searchParams.toString()
+  return qs ? `${url.pathname}?${qs}` : url.pathname
+}
+
+/** 入站 cookie 头可能是数组（多个同名头），统一成字符串 */
+function cookieString(v: string | string[] | undefined): string | undefined {
+  if (Array.isArray(v)) return v.join('; ')
+  return v
+}
+
+/** 去掉 cookie 头里的面板 cookie（上游不该看到 panel token） */
+function stripPanelCookie(cookieHeader: string | undefined): string | undefined {
+  if (cookieHeader === undefined) return undefined
+  const kept = cookieHeader.split(';').filter((part) => {
+    const eq = part.indexOf('=')
+    const key = eq === -1 ? part : part.slice(0, eq)
+    return key.trim() !== PANEL_COOKIE_PREFIX
+  })
+  return kept.length > 0 ? kept.map((p) => p.trim()).join('; ') : undefined
+}
+
+function panelSetCookie(runtime: ProxyRuntime): string {
+  return `${PANEL_COOKIE_PREFIX}=${runtime.panelToken}; HttpOnly; SameSite=Lax; Path=/`
+}
+
+function writeDenied(res: http.ServerResponse, message: string): void {
+  res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' })
+  res.end(`webProxy: ${message}`)
+}
+
 /**
  * 启动一个本机反向代理，把 `targetHost:targetPort` 的 dsh web 原样转发给
  * 浏览器（含 Cookie 注入与 Host/Origin 重写）。用于让 Obsidian 跨站 iframe
@@ -169,17 +274,42 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
       '请确认凭证库路径，或改用「在系统浏览器中打开」',
     )
   }
+  // 只在「目标确实需要鉴权」时才注入 cookie；无鉴权目标一律透传（不注入，
+  // 避免覆盖客户端透传的其它 cookie）。若需鉴权但没密钥，上面已抛错。
+  const injectSecret: Buffer | null = requiresAuth ? (secret as Buffer) : null
 
+  const panelToken = randomBytes(24).toString('base64url')
   const runtime: ProxyRuntime = {
     authority,
     targetHost: opts.targetHost,
     targetPort: opts.targetPort,
-    secret: secret ?? null,
+    secret: injectSecret,
+    panelToken,
+    host: opts.host,
+    port: 0,
     sockets: new Set(),
     agent: new http.Agent({ keepAlive: true, maxSockets: 256 }),
   }
 
-  const server = http.createServer((req, res) => handleRequest(runtime, req, res))
+  const server = http.createServer((req, res) => {
+    if (!hostOk(runtime, req)) {
+      writeDenied(res, '拒绝非本机 Host 请求')
+      return
+    }
+    const path = stripPanelParam(req.url ?? '/')
+    if (hasPanelCookie(runtime, req)) {
+      proxyToUpstream(runtime, req, res, path)
+      return
+    }
+    const location = bootstrapLocation(runtime, req)
+    if (location !== null) {
+      // 首次引导：放行 + 下发 panel cookie + 302 到干净地址（token 不进上游/地址栏）
+      res.writeHead(302, { Location: location, 'Set-Cookie': panelSetCookie(runtime), 'Cache-Control': 'no-store' })
+      res.end()
+      return
+    }
+    writeDenied(res, '缺少面板鉴权 cookie')
+  })
   server.on('upgrade', (req, socket, head) => handleUpgrade(runtime, req, socket, head))
 
   await new Promise<void>((resolve, reject) => {
@@ -191,11 +321,13 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
   })
   const address = server.address()
   const port = typeof address === 'object' && address !== null ? address.port : opts.port
+  runtime.port = port
 
   return {
     host: opts.host,
     port,
     url: `http://${opts.host}:${String(port)}/`,
+    panelToken,
     close: () => closeProxy(server, runtime),
   }
 }
@@ -204,14 +336,14 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
 // HTTP 转发
 // ---------------------------------------------------------------------------
 
-function handleRequest(runtime: ProxyRuntime, req: http.IncomingMessage, res: http.ServerResponse): void {
+function proxyToUpstream(runtime: ProxyRuntime, req: http.IncomingMessage, res: http.ServerResponse, path: string): void {
   const headers = buildUpstreamHeaders(runtime, req.headers)
   const upstream = http.request(
     {
       host: runtime.targetHost,
       port: runtime.targetPort,
       method: req.method,
-      path: req.url,
+      path,
       headers,
       agent: runtime.agent,
     },
@@ -253,7 +385,15 @@ function buildUpstreamHeaders(runtime: ProxyRuntime, incoming: http.IncomingHttp
     headers[lower] = value
   }
   headers.host = runtime.authority
-  if (runtime.secret !== null) headers.cookie = cookieHeader(runtime.secret, runtime.authority)
+  if (runtime.secret !== null) {
+    // 鉴权目标：注入官方签名 cookie（覆盖入站 cookie，避免透传 client 的 cookie）
+    headers.cookie = cookieHeader(runtime.secret, runtime.authority)
+  } else {
+    // 无鉴权目标：透传入站 cookie，但剥掉面板门 cookie（token 不进上游）
+    const stripped = stripPanelCookie(cookieString(headers.cookie))
+    if (stripped === undefined) delete headers.cookie
+    else headers.cookie = stripped
+  }
   // 信任围栏：Origin 必须恰好等于 Host 的 authority，否则 403
   if (headers.origin !== undefined) headers.origin = `http://${runtime.authority}`
   // 跨站标志：把上游视作 same-origin，避免 sec-fetch-site=cross-site 被拒
@@ -271,7 +411,13 @@ function buildUpgradeHeaders(runtime: ProxyRuntime, incoming: http.IncomingHttpH
     headers[lower] = value
   }
   headers.host = runtime.authority
-  if (runtime.secret !== null) headers.cookie = cookieHeader(runtime.secret, runtime.authority)
+  if (runtime.secret !== null) {
+    headers.cookie = cookieHeader(runtime.secret, runtime.authority)
+  } else {
+    const stripped = stripPanelCookie(cookieString(headers.cookie))
+    if (stripped === undefined) delete headers.cookie
+    else headers.cookie = stripped
+  }
   if (headers.origin !== undefined) headers.origin = `http://${runtime.authority}`
   headers['sec-fetch-site'] = 'same-origin'
   return headers
@@ -281,18 +427,20 @@ function buildUpgradeHeaders(runtime: ProxyRuntime, incoming: http.IncomingHttpH
 // WebSocket 隧道
 // ---------------------------------------------------------------------------
 
-function handleUpgrade(
-  runtime: ProxyRuntime,
-  req: http.IncomingMessage,
-  socket: Duplex,
-  head: Buffer,
-): void {
+function handleUpgrade(runtime: ProxyRuntime, req: http.IncomingMessage, socket: Duplex, head: Buffer): void {
+  // 面板门：WS 握手在文档加载后发生（panel cookie 已下发），只按 cookie 鉴权，无 ?panel 引导。
+  if (!hostOk(runtime, req) || !hasPanelCookie(runtime, req)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\n\r\n')
+    socket.destroy()
+    return
+  }
+  const cleanUrl = stripPanelParam(req.url ?? '/')
   runtime.sockets.add(socket)
   socket.on('close', () => runtime.sockets.delete(socket))
 
   const headers = buildUpgradeHeaders(runtime, req.headers)
 
-  const lines: string[] = [`${req.method} ${req.url} HTTP/1.1`]
+  const lines: string[] = [`${req.method} ${cleanUrl} HTTP/1.1`]
   for (const [key, value] of Object.entries(headers)) {
     if (value === undefined) continue
     lines.push(`${key}: ${Array.isArray(value) ? value.join(', ') : String(value)}`)

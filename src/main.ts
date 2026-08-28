@@ -238,7 +238,11 @@ export default class DshDockPlugin extends Plugin {
   get baseUrl(): string {
     // 面板 iframe 指向鉴权代理（跨站 iframe 可用）；代理未起时回退到官方地址
     // （保持旧的「用系统浏览器访问顶层上下文」语义）。
-    if (this.webProxy) return this.webProxy.url
+    // C1：代理入口有面板门。把每次 createWebProxy 随机生成的 panel token 拼进
+    // iframe src：代理首帧据此放行 + 下发 panel cookie 并 302 到干净地址，之后的
+    // /api 与 WS 都靠该 cookie 鉴权。token 只在插件控制的 iframe src 里出现，
+    // 本机进程/DNS-rebinding 页面拿不到，代理不被第三方冒用。
+    if (this.webProxy) return this.webProxy.url + '?panel=' + this.webProxy.panelToken
     const vaultRoot = this.vaultRoot()
     const port = computePort(this.settings, vaultRoot)
     return `http://${this.loopbackHost()}:${port}/`
@@ -454,6 +458,22 @@ export default class DshDockPlugin extends Plugin {
           this.setStatus({ kind: 'error', message: `面板鉴权代理启动失败: ${msg}` })
           return this.status
         }
+        // M3 竞态：`createWebProxyFor` 的 await 期间用户点了停止 → 停掉刚建好的
+        // 代理与进程、回到 stopped。cancelStart 在 await 前检查过一(after 418)，
+        // 但 `this.webProxy` 是在 await 之后才赋值的，必须复查一次，否则会留下
+        // 孤儿代理并误置 running。
+        if (this.cancelStart) {
+          await this.stopWebProxy()
+          if (result.proc) {
+            try {
+              await stopProcess(result.proc)
+            } catch {
+              /* ignore */
+            }
+          }
+          this.setStatus({ kind: 'stopped' })
+          return this.status
+        }
       }
       this.setStatus(result.status)
       if (result.status.kind === 'error') {
@@ -596,6 +616,10 @@ export default class DshDockPlugin extends Plugin {
     // 不再依赖"打开设置页才收敛"（设置页的收敛见 settings.ts）。
     if (this.settings.host !== '127.0.0.1' && this.settings.host !== 'localhost') {
       this.settings.host = '127.0.0.1'
+    }
+    // H3：历史 data.json 可能残留 port=0（"OS 分配"不可达），加载即收敛到有效范围。
+    if (!Number.isInteger(this.settings.port) || this.settings.port < 1 || this.settings.port > 65535) {
+      this.settings.port = DEFAULT_SETTINGS.port
     }
     // 旧版（dsh-host V0.1）设置迁移：dshHome 字符串 → custom 模式
     const legacy: { dshHome?: string } | null = data

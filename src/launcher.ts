@@ -64,10 +64,10 @@ export interface LaunchOptions {
   /** 附加环境变量 */
   env?: NodeJS.ProcessEnv
   /**
-   * 子进程工作目录。per-vault 模式传 vault 根：新建会话的 cwd 即本库根，
-   * vault 工具解析顺序第 3 位（会话 cwd 若是库）直接命中 —— 在生物备课的
-   * 服务里提问绝不会解析成生物题库。shared 模式不传（所有库共用一个服务，
-   * 靠焦点标记跟随）。
+   * 子进程工作目录（可选）。当前插件**不传**：per-vault 的库识别走环境变量
+   * `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` + 标记文件，而不是 cwd；
+   * cwd 与库根是两个独立概念，不合并。若未来某服务确实需要以库根为 cwd，
+   * 可在此传入（launcher 会透传给 spawn）。
    */
   cwd?: string
   /**

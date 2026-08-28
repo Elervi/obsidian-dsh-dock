@@ -36,7 +36,7 @@
 | --- | --- |
 | 会话 / 历史 | 每库独占 `~/.dsh/vaults/<库名>-<hash6>` |
 | 监听端口 | `port + vaultRoot hash % 4096`（冲突概率 ~1/4096） |
-| vault 识别 | 注入 `DSH_OBSIDIAN_VAULT_PATH` + spawn `cwd = vaultRoot` |
+| vault 识别 | 注入 `DSH_OBSIDIAN_VAULT_PATH` + 标记文件跟随（不覆盖 cwd） |
 | 模型 / 密钥 / 主题 / presets | 全局共享：软链 `profiles/` + `cordis.patch.yml` 指回 `~/.dsh` |
 
 ## ⚙️ 设置
@@ -45,7 +45,7 @@
 | --- | --- |
 | dsh CLI 路径 | 自动探测（`$DSH_BIN` → npm 全局） |
 | Node 可执行文件 | 系统 node（最稳定） |
-| 监听端口 | 3080；`0` = OS 分配空闲端口 |
+| 监听端口 | 3080（≥1，不用 0 表示「OS 分配」——launcher 无需发现子进程实际端口） |
 | DSH_HOME 模式 | per-vault 隔离（可切换 shared / 自定义） |
 | 随 Obsidian 自动启动 | ✅ 开 |
 | Obsidian API 桥 | ✅ 开（127.0.0.1 回环，token 鉴权，端口 18080+ 独立于 dsh web） |
@@ -82,13 +82,13 @@ createBridgeServer(service=ObsidianBridgeService(app)) @ 127.0.0.1:<18080+hash>
 | --- | --- | --- |
 | 启动 DSH | 点机器人图标，面板即官方 DSH Web UI | 无需自己开终端跑 `dsh web` |
 | 定位当前库 | 注入 `DSH_OBSIDIAN_VAULT_PATH` / `DSH_OBSIDIAN_VAULT_NAME` | 「注入的本库」优先于工作目录巧合，多库同开不串 |
-| 会话工作目录 | spawn `cwd = vaultRoot` | 会话 cwd 即库根，`vault_current` 判定依据清晰 |
+| 会话工作目录 | 不覆盖（保持 dsh 默认）；库识别走注入的 env + 标记文件 | cwd 与库根是两个独立概念，不合并 |
 | 多库并行 | 端口按库 hash 偏移互不冲突 | 面板共享同一份 preset，一次装好全库可用 |
 | 配置共享 | `cordis.patch.yml` 指回 `~/.dsh` | 配一次全库生效，只有会话/历史按库隔离 |
 
 **三步启用**：① 装好本插件 → ② 在 DSH 侧装 **Obsidian 模式** preset（复制其 `preset/` 到 `~/.dsh/.agent-presets/obsidian`）→ ③ 面板新建会话选「Obsidian 模式」，说「读一下今天的笔记」「把这段整理进 [[xxx]]」，Agent 自动读写当前库，无需任何路径配置。
 
-> 仅 **per-vault** 模式（默认）注入 env 并设 cwd 为库根；**shared** 模式多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。
+> 仅 **per-vault** 模式（默认）注入 env（库名/路径 + 桥地址/token）；**shared** 模式多库共用一个服务，工具侧退回「最近活跃打开库 / 工作目录」解析。cwd 一律不覆盖——库识别靠 `DSH_OBSIDIAN_VAULT_PATH` 与标记文件。
 
 ## License
 

@@ -181,14 +181,14 @@ export class DshDockSettingsTab extends PluginSettingTab {
       })
     new Setting(containerEl)
       .setName('监听端口（基准）')
-      .setDesc('官方默认 3080。shared/custom 模式直接使用；per-vault 模式在此基础上按 vault 派生独立端口（每 vault 独占，会话互不可见）。')
+      .setDesc('官方默认 3080（1–65535；不用 0=“OS 分配”，launcher 无需探测子进程实际端口）。shared/custom 模式直接使用；per-vault 模式在此基础上按 vault 派生独立端口（每 vault 独占，会话互不可见）。')
       .addText((t) =>
         t
           .setPlaceholder('3080')
           .setValue(String(this.plugin.settings.port))
           .onChange(async (v) => {
             const n = Number(v.trim())
-            this.plugin.settings.port = Number.isInteger(n) && n >= 0 && n <= 65535 ? n : 3080
+            this.plugin.settings.port = Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 3080
             await this.plugin.saveSettings()
             this.netPreview.textContent = this.describeNet()
           }),

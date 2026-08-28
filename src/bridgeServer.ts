@@ -52,6 +52,15 @@ function tokenEquals(a: string, b: string): boolean {
   }
 }
 
+/** H4：只允许回环地址。桥的 Host 头校验可被伪造 Host 绕过，所以绑定地址本身必须是回环。 */
+function isLoopbackHost(host: string): boolean {
+  if (host === 'localhost' || host === '::1') return true
+  // 127.0.0.0/8 都是回环；校验各段 ≤255
+  const m = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (!m) return false
+  return m.slice(1).every((n) => Number(n) <= 255)
+}
+
 function sendJson(res: ServerResponse, status: number, data: unknown): void {
   const body = JSON.stringify(data)
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
@@ -145,6 +154,10 @@ function requireQuery(params: URLSearchParams, key: string): string {
 export async function createBridgeServer(opts: BridgeServerOptions): Promise<BridgeServerHandle> {
   const { service } = opts
   const maxBody = opts.maxBodyBytes ?? DEFAULT_MAX_BODY
+  // H4：桥只能绑定回环（防调用方误传 0.0.0.0/:: 把 vault API 暴露到局域网）
+  if (!isLoopbackHost(opts.host)) {
+    throw new Error(`桥必须只绑定回环地址（127.0.0.1 / localhost / ::1），拒绝绑到 ${opts.host}`)
+  }
   let boundPort = opts.port
 
   const server = createServer(async (req, res) => {
