@@ -39,6 +39,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          gh release create "$tag" \
-            --title="$tag" \
-            main.js manifest.json styles.css
+          # 防重复：tag 的 release 已存在时跳过创建（如对同一 tag 重新跑本 workflow），
+          # 否则 gh release create 会报 "release already exists"。
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; skipping create."
+          else
+            gh release create "$tag" \
+              --title="$tag" \
+              main.js manifest.json styles.css
+          fi
