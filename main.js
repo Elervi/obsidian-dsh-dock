@@ -1301,6 +1301,223 @@ async function createBridgeServer(opts) {
   throw new BridgeError(BridgeErrorCode.INTERNAL, "\u6865\u542F\u52A8\u5931\u8D25", 500);
 }
 
+// src/webProxy.ts
+var import_node_crypto2 = require("node:crypto");
+var fs3 = __toESM(require("node:fs"), 1);
+var http2 = __toESM(require("node:http"), 1);
+var net = __toESM(require("node:net"), 1);
+var COOKIE_PREFIX = "dsh-auth-";
+var COOKIE_PAYLOAD_VERSION = 1;
+var SECRET_BYTES = 32;
+var AUTH_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1e3;
+var BASE64URL_PATTERN = /^[A-Za-z0-9_-]*$/;
+var HOP_BY_HOP = /* @__PURE__ */ new Set([
+  "connection",
+  "keep-alive",
+  "proxy-connection",
+  "transfer-encoding",
+  "te",
+  "trailer"
+]);
+function encodeBase64Url(input) {
+  return Buffer.from(input).toString("base64").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+function decodeBase64Url(value) {
+  if (!BASE64URL_PATTERN.test(value) || value.length % 4 === 1) return void 0;
+  const pad = "=".repeat((4 - value.length % 4) % 4);
+  const decoded = Buffer.from(value.replaceAll("-", "+").replaceAll("_", "/") + pad, "base64");
+  return encodeBase64Url(decoded) === value ? decoded : void 0;
+}
+function authorityOf(host, port) {
+  return new URL(`http://${host}:${String(port)}`).host;
+}
+function cookieName(authority) {
+  return COOKIE_PREFIX + encodeBase64Url((0, import_node_crypto2.createHash)("sha256").update(authority).digest());
+}
+function mintCookieValue(secret, authority, now) {
+  const payload = {
+    version: COOKIE_PAYLOAD_VERSION,
+    authority,
+    issuedAt: now,
+    expiresAt: now + AUTH_MAX_AGE_MS
+  };
+  const body = encodeBase64Url(Buffer.from(JSON.stringify(payload), "utf8"));
+  const sig = (0, import_node_crypto2.createHmac)("sha256", secret).update(body).digest();
+  return `v1.${body}.${encodeBase64Url(sig)}`;
+}
+function cookieHeader(secret, authority) {
+  return `${cookieName(authority)}=${mintCookieValue(secret, authority, Date.now())}`;
+}
+function readSecretFrom(credentialPath) {
+  try {
+    const text = fs3.readFileSync(credentialPath, "utf8");
+    const m = /client-connection\/browser-session:[\s\S]*?secret:\s*([A-Za-z0-9_-]+)/.exec(text);
+    if (!m) return void 0;
+    const secret = decodeBase64Url(m[1]);
+    return secret !== void 0 && secret.byteLength === SECRET_BYTES ? secret : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function resolveBrowserSecret(candidates) {
+  for (const candidate of candidates) {
+    const secret = readSecretFrom(candidate);
+    if (secret !== void 0) return secret;
+  }
+  return void 0;
+}
+function probeRequiresAuth(host, port, timeoutMs = 3e3) {
+  return new Promise((resolve2) => {
+    const req = http2.get({ host, port, path: "/", timeout: timeoutMs }, (res) => {
+      res.resume();
+      res.on("end", () => resolve2(res.statusCode === 401));
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve2(false);
+    });
+    req.on("error", () => resolve2(false));
+  });
+}
+async function createWebProxy(opts) {
+  const authority = authorityOf(opts.targetHost, opts.targetPort);
+  const requiresAuth = await probeRequiresAuth(opts.targetHost, opts.targetPort);
+  const secret = resolveBrowserSecret(opts.credentialPaths);
+  if (requiresAuth && secret === void 0) {
+    throw new Error(
+      `webProxy: \u76EE\u6807 dsh web \u9700\u8981\u6D4F\u89C8\u5668\u9274\u6743\uFF0C\u4F46\u672A\u627E\u5230\u4F1A\u8BDD\u7B7E\u540D\u5BC6\u94A5\uFF08\u8BD5\u8FC7: ${JSON.stringify(opts.credentialPaths)}\uFF09\u3002\u8BF7\u786E\u8BA4\u51ED\u8BC1\u5E93\u8DEF\u5F84\uFF0C\u6216\u6539\u7528\u300C\u5728\u7CFB\u7EDF\u6D4F\u89C8\u5668\u4E2D\u6253\u5F00\u300D`
+    );
+  }
+  const runtime = {
+    authority,
+    targetHost: opts.targetHost,
+    targetPort: opts.targetPort,
+    secret: secret ?? null,
+    sockets: /* @__PURE__ */ new Set(),
+    agent: new http2.Agent({ keepAlive: true, maxSockets: 256 })
+  };
+  const server = http2.createServer((req, res) => handleRequest(runtime, req, res));
+  server.on("upgrade", (req, socket, head) => handleUpgrade(runtime, req, socket, head));
+  await new Promise((resolve2, reject) => {
+    server.once("error", reject);
+    server.listen(opts.port, opts.host, () => {
+      server.removeListener("error", reject);
+      resolve2();
+    });
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : opts.port;
+  return {
+    host: opts.host,
+    port,
+    url: `http://${opts.host}:${String(port)}/`,
+    close: () => closeProxy(server, runtime)
+  };
+}
+function handleRequest(runtime, req, res) {
+  const headers = buildUpstreamHeaders(runtime, req.headers);
+  const upstream = http2.request(
+    {
+      host: runtime.targetHost,
+      port: runtime.targetPort,
+      method: req.method,
+      path: req.url,
+      headers,
+      agent: runtime.agent
+    },
+    (upstreamRes) => {
+      const responseHeaders = { ...upstreamRes.headers };
+      for (const hop of HOP_BY_HOP) delete responseHeaders[hop];
+      res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+      if (req.method === "HEAD") {
+        upstreamRes.resume();
+        upstreamRes.on("end", () => res.end());
+        return;
+      }
+      upstreamRes.pipe(res);
+      upstreamRes.on("end", () => res.end());
+      upstreamRes.on("error", () => res.destroy());
+    }
+  );
+  upstream.on("error", (err) => {
+    if (!res.headersSent) {
+      res.writeHead(502, { "content-type": "text/plain; charset=utf-8" });
+      res.end(`webProxy: \u4E0A\u6E38\u8F6C\u53D1\u5931\u8D25: ${String(err)}`);
+    } else {
+      res.destroy();
+    }
+  });
+  req.on("error", () => upstream.destroy());
+  req.pipe(upstream);
+}
+function buildUpstreamHeaders(runtime, incoming) {
+  const headers = {};
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === void 0) continue;
+    const lower = key.toLowerCase();
+    if (HOP_BY_HOP.has(lower)) continue;
+    headers[lower] = value;
+  }
+  headers.host = runtime.authority;
+  if (runtime.secret !== null) headers.cookie = cookieHeader(runtime.secret, runtime.authority);
+  if (headers.origin !== void 0) headers.origin = `http://${runtime.authority}`;
+  headers["sec-fetch-site"] = "same-origin";
+  return headers;
+}
+function buildUpgradeHeaders(runtime, incoming) {
+  const headers = {};
+  for (const [key, value] of Object.entries(incoming)) {
+    if (value === void 0) continue;
+    const lower = key.toLowerCase();
+    if (lower === "proxy-connection") continue;
+    headers[lower] = value;
+  }
+  headers.host = runtime.authority;
+  if (runtime.secret !== null) headers.cookie = cookieHeader(runtime.secret, runtime.authority);
+  if (headers.origin !== void 0) headers.origin = `http://${runtime.authority}`;
+  headers["sec-fetch-site"] = "same-origin";
+  return headers;
+}
+function handleUpgrade(runtime, req, socket, head) {
+  runtime.sockets.add(socket);
+  socket.on("close", () => runtime.sockets.delete(socket));
+  const headers = buildUpgradeHeaders(runtime, req.headers);
+  const lines = [`${req.method} ${req.url} HTTP/1.1`];
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === void 0) continue;
+    lines.push(`${key}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
+  }
+  const rawRequest = lines.join("\r\n") + "\r\n\r\n";
+  const upstream = net.connect({ host: runtime.targetHost, port: runtime.targetPort }, () => {
+    upstream.write(rawRequest);
+    if (head !== void 0 && head.length > 0) upstream.write(head);
+    upstream.pipe(socket);
+    socket.pipe(upstream);
+  });
+  runtime.sockets.add(upstream);
+  upstream.on("close", () => {
+    runtime.sockets.delete(upstream);
+    socket.destroy();
+  });
+  upstream.on("error", () => socket.destroy());
+  socket.on("close", () => upstream.destroy());
+  socket.on("error", () => upstream.destroy());
+}
+function closeProxy(server, runtime) {
+  return new Promise((resolve2) => {
+    for (const sock of runtime.sockets) {
+      try {
+        sock.destroy();
+      } catch {
+      }
+    }
+    runtime.sockets.clear();
+    runtime.agent.destroy();
+    server.closeAllConnections?.();
+    server.close(() => resolve2());
+  });
+}
+
 // src/obsidianService.ts
 var import_obsidian4 = require("obsidian");
 function noteRel(input) {
@@ -1973,6 +2190,13 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
    */
   bridge = null;
   bridgeToken = (0, import_crypto.randomBytes)(24).toString("base64url");
+  /**
+   * 面板鉴权反向代理：把官方 dsh web 作为跨站 iframe 在 Obsidian 里显示所必需。
+   * dsh web 的浏览器鉴权 cookie 是 SameSite=Strict，跨站 iframe 无法存储/发送；
+   * 本代理读取 dsh web 凭证库里的浏览器会话签名密钥、注入有效 cookie，故面板
+   * 无需 launch token、无论服务是新起还是已存在都能显示。生命周期跟随 dsh web 进程。
+   */
+  webProxy = null;
   /** 桥的访问地址（运行中才有值） */
   get bridgeUrl() {
     return this.bridge ? `http://${this.loopbackHost()}:${this.bridge.port}` : null;
@@ -2052,6 +2276,13 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     return this.proc;
   }
   get baseUrl() {
+    if (this.webProxy) return this.webProxy.url;
+    const vaultRoot = this.vaultRoot();
+    const port = computePort(this.settings, vaultRoot);
+    return `http://${this.loopbackHost()}:${port}/`;
+  }
+  /** 官方 dsh web 的真实地址（顶层上下文用；不经过面板代理） */
+  get webUrl() {
     const vaultRoot = this.vaultRoot();
     const port = computePort(this.settings, vaultRoot);
     return `http://${this.loopbackHost()}:${port}/`;
@@ -2218,6 +2449,22 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
         }
         this.hookChildLogs(result.proc);
       }
+      if (result.status.kind === "running") {
+        try {
+          this.webProxy = await this.createWebProxyFor(port, dshHome, sharedConfigRoot);
+        } catch (proxyErr) {
+          const msg = proxyErr instanceof Error ? proxyErr.message : String(proxyErr);
+          if (result.proc) {
+            try {
+              await stopProcess(result.proc);
+            } catch {
+            }
+          }
+          this.webProxy = null;
+          this.setStatus({ kind: "error", message: `\u9762\u677F\u9274\u6743\u4EE3\u7406\u542F\u52A8\u5931\u8D25: ${msg}` });
+          return this.status;
+        }
+      }
       this.setStatus(result.status);
       if (result.status.kind === "error") {
         new import_obsidian5.Notice(`DSH \u542F\u52A8\u5931\u8D25: ${result.status.message}`);
@@ -2236,6 +2483,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   async stop() {
     this.cancelStart = true;
     this.starting = false;
+    await this.stopWebProxy();
     if (this.proc) {
       await stopProcess(this.proc);
       this.proc = null;
@@ -2243,16 +2491,52 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     removeDshPidFile(computeDshHome(this.settings, this.vaultRoot()));
     this.setStatus({ kind: "stopped" });
   }
+  /** 关闭面板鉴权代理（幂等） */
+  async stopWebProxy() {
+    const proxy = this.webProxy;
+    this.webProxy = null;
+    if (proxy) {
+      try {
+        await proxy.close();
+      } catch {
+      }
+    }
+  }
+  /**
+   * 围绕真实 dsh web 端口起面板鉴权代理，并读取其浏览器会话签名密钥。
+   * 候选凭证库路径：per-vault 共享配置下密钥在 ~/.dsh/.credentials.yaml，
+   * 其次是本 dshHome / 常规 ~/.dsh，覆盖自建与挂接已有实例两种情形。
+   */
+  async createWebProxyFor(targetPort, dshHome, sharedConfigRoot) {
+    const base = sharedConfigRoot ?? dshHome;
+    const candidates = [
+      path3.join(base, ".credentials.yaml"),
+      path3.join(dshHome, ".credentials.yaml"),
+      path3.join(os3.homedir(), ".dsh", ".credentials.yaml")
+    ];
+    return createWebProxy({
+      host: this.loopbackHost(),
+      port: 0,
+      targetHost: this.loopbackHost(),
+      targetPort,
+      credentialPaths: [...new Set(candidates)]
+    });
+  }
   /**
    * D3：品牌特征校验 —— GET 服务根路径，响应体含 "DeepSeek Harness"
    * （官方 dsh web 前端 index.html 的 <title>）才认定是 dsh web。
    * requestUrl 是渲染进程里 CSP 豁免的官方 HTTP 助手（obsidian.d.ts:5442）；
    * throw: false 让 4xx/5xx 也走正常返回路径，统一按特征判断。
+   * 鉴权后的官方 dsh web 对裸 `/` 返回 401（无 cookie 时），其 401 响应体
+   * 即 "dsh web authentication required; reopen the URL printed by dsh web."，
+   * 同样是无歧义的品牌特征 —— 一并认为是 dsh web，才能挂接已存在的鉴权实例。
    */
   async verifyDshBrand(url) {
     try {
       const resp = await (0, import_obsidian5.requestUrl)({ url, method: "GET", throw: false });
-      return resp.status === 200 && resp.text.includes("DeepSeek Harness");
+      if (resp.status === 200) return resp.text.includes("DeepSeek Harness");
+      if (resp.status === 401) return resp.text.includes("dsh web authentication required");
+      return false;
     } catch {
       return false;
     }
@@ -2262,6 +2546,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     proc.once("exit", (code, signal) => {
       if (this.proc === proc) {
         this.proc = null;
+        void this.stopWebProxy();
         removeDshPidFile(computeDshHome(this.settings, this.vaultRoot()));
         if (this.status.kind === "running" && !this.status.attached) {
           this.setStatus({ kind: "error", message: `DSH \u8FDB\u7A0B\u9000\u51FA: code=${code} signal=${signal ?? ""}` });
@@ -2326,7 +2611,7 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
     workspace.setActiveLeaf(leaf);
   }
   async openInBrowser() {
-    await import_electron.shell.openExternal(this.baseUrl);
+    await import_electron.shell.openExternal(this.webUrl);
   }
   /**
    * 弹出独立窗口（Obsidian popout）：DSH 面板进入独立 BrowserWindow =

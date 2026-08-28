@@ -50,6 +50,17 @@ const bridgeOptions = {
   logLevel: 'info',
 }
 
+/** webProxy.ts 单独产出 CJS（纯 Node 可测），供 smoke 验证反向代理鉴权注入 */
+const webProxyOptions = {
+  entryPoints: ['src/webProxy.ts'],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node18',
+  outfile: 'lib/webProxy.cjs',
+  logLevel: 'info',
+}
+
 if (watch) {
   const ctx = await esbuild.context(options)
   await ctx.watch()
@@ -57,10 +68,13 @@ if (watch) {
   await ctx2.watch()
   const ctx3 = await esbuild.context(bridgeOptions)
   await ctx3.watch()
+  const ctx4 = await esbuild.context(webProxyOptions)
+  await ctx4.watch()
   console.log('[dsh-dock] watching...')
 } else {
   await esbuild.build(options)
   await esbuild.build(launcherOptions)
   await esbuild.build(bridgeOptions)
-  console.log('[dsh-dock] build done -> main.js, lib/launcher.cjs, lib/bridgeServer.cjs')
+  await esbuild.build(webProxyOptions)
+  console.log('[dsh-dock] build done -> main.js, lib/launcher.cjs, lib/bridgeServer.cjs, lib/webProxy.cjs')
 }

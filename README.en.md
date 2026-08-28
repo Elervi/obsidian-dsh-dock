@@ -12,6 +12,7 @@
 
 - 📦 **Zero-build** — one-click install from the Obsidian marketplace, or copy 3 files
 - 🪟 **Native official** — locates `dsh` → spawns the official `dsh web` → embeds the official UI in an iframe
+- 🔐 **Auth handoff (B2)** — dsh web's browser cookie is `SameSite=Strict`, which a cross-site iframe can't use. This plugin spins up a loopback reverse proxy that reads dsh web's session signing key from its credential store, injects the cookie and rewrites Host/Origin to pass the official `/api` trust fence — so the panel needs no launch token and works for both freshly-spawned and already-running instances (HTTP + WebSocket proxying)
 - 🗂️ **Per-vault isolation** — sessions isolated per vault, config shared across vaults
 - 🤝 **Pairs with [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault)** — agent-driven note workflow inside Obsidian
 - 🧹 **Self-cleaning** — SIGTERM on unload/disable; orphan processes left by a crash are swept on next start
@@ -60,6 +61,7 @@ existing DSH service on the port → attach directly, no second spawn
 - Desktop only (depends on `child_process`)
 - Port taken by a **non-DSH** service → exits fast with a clear error; taken by another DSH → attaches to it
 - Full-text session search needs Node ≥ 22.5
+- **dsh web auth reads `~/.dsh/.credentials.yaml`**: the panel proxy needs the `client-connection/browser-session` signing key from that credential store to inject a cookie. If the target dsh web uses a non-default / non-shared credential path, the panel reports "面板鉴权代理启动失败" (use "Open in system browser" for the official URL in that case).
 
 ## 🤝 Companion plugin
 

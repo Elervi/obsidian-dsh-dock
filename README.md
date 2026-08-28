@@ -12,6 +12,7 @@
 
 - 📦 **开箱即用** — Obsidian 市场一键安装，或复制 3 个文件
 - 🪟 **官方原生** — 定位 dsh → 拉起官方 `dsh web` → iframe 原样嵌入
+- 🔐 **鉴权自动接管（B2）** — 官方 dsh web 的浏览器鉴权 cookie 是 `SameSite=Strict`，跨站 iframe 无法认证。本插件在面板内核起一个本机反向代理，读取 dsh web 凭证库的会话签名密钥、注入 cookie 并重写 Host/Origin 通过官方 `/api` 信任围栏 —— 面板无需 launch token，无论服务是新起还是已存在都能直接显示（HTTP + WebSocket 双向代理）
 - 🗂️ **Per-vault 隔离** — 会话按库独立、配置全局共享，多库并行互不串扰
 - 🔌 **Obsidian API 桥（B1）** — 插件加载即在本机 127.0.0.1 起一个 token 鉴权的 HTTP 桥，把 `app.vault` / `metadataCache` / `fileManager` 的官方解析结果喂给 DSH 侧 `vault_*` 工具（桥优先、文件回退），工具写后 Obsidian UI 与索引即时刷新
 - 🤝 **珠联璧合** — 与 [dsh-tool-obsidian-vault](https://github.com/Elervi/dsh-tool-obsidian-vault) 联动，Obsidian 内直接驱动 Agent 笔记工作流
@@ -69,6 +70,7 @@ createBridgeServer(service=ObsidianBridgeService(app)) @ 127.0.0.1:<18080+hash>
 - 仅桌面端（依赖 `child_process`）
 - 端口被**非 DSH 服务**占用 → 秒退报错；被另一 DSH 占用 → 直接挂接
 - 会话全文搜索需 Node ≥ 22.5
+- **dsh web 鉴权依赖 `~/.dsh/.credentials.yaml`**：面板代理需要读取其中的 `client-connection/browser-session` 签名密钥来注入 cookie。若目标 dsh web 用了非默认/非共享的凭证库路径，面板将报「面板鉴权代理启动失败」（届时用「在系统浏览器中打开」访问官方地址）。
 - 桥的 `vault_rename_note` 遵循 Obsidian「自动更新内部链接」设置（关闭时不改写引用，与 Obsidian UI 行为一致）
 - 桥覆盖 vault / fileManager / metadataCache / workspace 中与笔记工作流相关的全部核心 API；全文搜索无公开 API（桥内实现 substring/regex），附件二进制读写与 `/v1/events` 变更推送未做
 

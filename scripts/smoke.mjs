@@ -70,8 +70,12 @@ async function main() {
   const res = await fetch(`http://${host}:${port}/`)
   const html = await res.text()
   console.log(`[smoke]   -> HTTP ${res.status}, ${html.length} bytes`)
-  if (!/html|script/i.test(html)) {
-    console.error('[smoke] FAIL: 首页不是 HTML 页面')
+  // 新版 dsh web 对裸 `/` 返回 401（无 cookie 时，响应体即鉴权提示）；旧版直接 200。
+  // 两种都证明 dsh web 正在服务 —— 鉴权是面板代理的事，这里只确认服务在跑。
+  const authServed = res.status === 401 && html.includes('dsh web authentication required')
+  const htmlServed = res.status === 200 && /html|script/i.test(html)
+  if (!authServed && !htmlServed) {
+    console.error('[smoke] FAIL: 首页既不是 HTML 页面也不是 dsh 鉴权响应')
     proc.kill('SIGKILL')
     process.exit(1)
   }

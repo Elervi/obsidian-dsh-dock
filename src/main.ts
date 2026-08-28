@@ -29,6 +29,7 @@ import { DshDockSettingsTab, DEFAULT_SETTINGS, type DshDockSettings } from './se
 import { DshWebView, DSH_WEB_VIEW_TYPE } from './view'
 import { currentVaultInfo, writeCurrentVaultMarker } from './currentVault'
 import { createBridgeServer, BridgeError, type BridgeServerHandle } from './bridgeServer'
+import { createWebProxy, type WebProxyHandle } from './webProxy'
 import { ObsidianBridgeService } from './obsidianService'
 
 /**
@@ -112,6 +113,14 @@ export default class DshDockPlugin extends Plugin {
    */
   private bridge: BridgeServerHandle | null = null
   private readonly bridgeToken = randomBytes(24).toString('base64url')
+
+  /**
+   * 面板鉴权反向代理：把官方 dsh web 作为跨站 iframe 在 Obsidian 里显示所必需。
+   * dsh web 的浏览器鉴权 cookie 是 SameSite=Strict，跨站 iframe 无法存储/发送；
+   * 本代理读取 dsh web 凭证库里的浏览器会话签名密钥、注入有效 cookie，故面板
+   * 无需 launch token、无论服务是新起还是已存在都能显示。生命周期跟随 dsh web 进程。
+   */
+  private webProxy: WebProxyHandle | null = null
 
   /** 桥的访问地址（运行中才有值） */
   get bridgeUrl(): string | null {
@@ -227,6 +236,16 @@ export default class DshDockPlugin extends Plugin {
   }
 
   get baseUrl(): string {
+    // 面板 iframe 指向鉴权代理（跨站 iframe 可用）；代理未起时回退到官方地址
+    // （保持旧的「用系统浏览器访问顶层上下文」语义）。
+    if (this.webProxy) return this.webProxy.url
+    const vaultRoot = this.vaultRoot()
+    const port = computePort(this.settings, vaultRoot)
+    return `http://${this.loopbackHost()}:${port}/`
+  }
+
+  /** 官方 dsh web 的真实地址（顶层上下文用；不经过面板代理） */
+  get webUrl(): string {
     const vaultRoot = this.vaultRoot()
     const port = computePort(this.settings, vaultRoot)
     return `http://${this.loopbackHost()}:${port}/`
@@ -416,6 +435,26 @@ export default class DshDockPlugin extends Plugin {
         }
         this.hookChildLogs(result.proc)
       }
+      // 面板鉴权代理：跨站 iframe 显示 dsh web 所必需。围绕真实端口起，读取 dsh web
+      // 凭证库的浏览器会话密钥注入 cookie；代理失败则无法在面板显示，视为启动错误
+      // （自起进程一并停止，避免半托管；挂接的外部进程不动，仅报错）。
+      if (result.status.kind === 'running') {
+        try {
+          this.webProxy = await this.createWebProxyFor(port, dshHome, sharedConfigRoot)
+        } catch (proxyErr) {
+          const msg = proxyErr instanceof Error ? proxyErr.message : String(proxyErr)
+          if (result.proc) {
+            try {
+              await stopProcess(result.proc)
+            } catch {
+              /* ignore */
+            }
+          }
+          this.webProxy = null
+          this.setStatus({ kind: 'error', message: `面板鉴权代理启动失败: ${msg}` })
+          return this.status
+        }
+      }
       this.setStatus(result.status)
       if (result.status.kind === 'error') {
         new Notice(`DSH 启动失败: ${result.status.message}`)
@@ -436,6 +475,7 @@ export default class DshDockPlugin extends Plugin {
     // M3：先置取消标记再置 starting=false，让正在拉起的 start() 意识到停止请求
     this.cancelStart = true
     this.starting = false
+    await this.stopWebProxy()
     if (this.proc) {
       await stopProcess(this.proc)
       this.proc = null
@@ -444,16 +484,59 @@ export default class DshDockPlugin extends Plugin {
     this.setStatus({ kind: 'stopped' })
   }
 
+  /** 关闭面板鉴权代理（幂等） */
+  private async stopWebProxy(): Promise<void> {
+    const proxy = this.webProxy
+    this.webProxy = null
+    if (proxy) {
+      try {
+        await proxy.close()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * 围绕真实 dsh web 端口起面板鉴权代理，并读取其浏览器会话签名密钥。
+   * 候选凭证库路径：per-vault 共享配置下密钥在 ~/.dsh/.credentials.yaml，
+   * 其次是本 dshHome / 常规 ~/.dsh，覆盖自建与挂接已有实例两种情形。
+   */
+  private async createWebProxyFor(
+    targetPort: number,
+    dshHome: string,
+    sharedConfigRoot: string | undefined,
+  ): Promise<WebProxyHandle> {
+    const base = sharedConfigRoot ?? dshHome
+    const candidates = [
+      path.join(base, '.credentials.yaml'),
+      path.join(dshHome, '.credentials.yaml'),
+      path.join(os.homedir(), '.dsh', '.credentials.yaml'),
+    ]
+    return createWebProxy({
+      host: this.loopbackHost(),
+      port: 0,
+      targetHost: this.loopbackHost(),
+      targetPort,
+      credentialPaths: [...new Set(candidates)],
+    })
+  }
+
   /**
    * D3：品牌特征校验 —— GET 服务根路径，响应体含 "DeepSeek Harness"
    * （官方 dsh web 前端 index.html 的 <title>）才认定是 dsh web。
    * requestUrl 是渲染进程里 CSP 豁免的官方 HTTP 助手（obsidian.d.ts:5442）；
    * throw: false 让 4xx/5xx 也走正常返回路径，统一按特征判断。
+   * 鉴权后的官方 dsh web 对裸 `/` 返回 401（无 cookie 时），其 401 响应体
+   * 即 "dsh web authentication required; reopen the URL printed by dsh web."，
+   * 同样是无歧义的品牌特征 —— 一并认为是 dsh web，才能挂接已存在的鉴权实例。
    */
   private async verifyDshBrand(url: string): Promise<boolean> {
     try {
       const resp = await requestUrl({ url, method: 'GET', throw: false })
-      return resp.status === 200 && resp.text.includes('DeepSeek Harness')
+      if (resp.status === 200) return resp.text.includes('DeepSeek Harness')
+      if (resp.status === 401) return resp.text.includes('dsh web authentication required')
+      return false
     } catch {
       return false
     }
@@ -464,6 +547,7 @@ export default class DshDockPlugin extends Plugin {
     proc.once('exit', (code, signal) => {
       if (this.proc === proc) {
         this.proc = null
+        void this.stopWebProxy()
         removeDshPidFile(computeDshHome(this.settings, this.vaultRoot()))
         if (this.status.kind === 'running' && !this.status.attached) {
           this.setStatus({ kind: 'error', message: `DSH 进程退出: code=${code} signal=${signal ?? ''}` })
@@ -544,7 +628,9 @@ export default class DshDockPlugin extends Plugin {
   }
 
   async openInBrowser(): Promise<void> {
-    await shell.openExternal(this.baseUrl)
+    // 打开真实的官方 dsh web 地址（顶层上下文；浏览器已持有会话 cookie 时可加载）。
+    // 面板 iframe 用 baseUrl（鉴权代理），系统浏览器用 webUrl（规范、可收藏）。
+    await shell.openExternal(this.webUrl)
   }
 
   /**
