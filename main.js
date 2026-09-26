@@ -1383,12 +1383,38 @@ function readSecretFrom(credentialPath) {
     return void 0;
   }
 }
-function resolveBrowserSecret(candidates) {
+function probeSecretAccepted(host, port, authority, secret, timeoutMs = 3e3) {
+  return new Promise((resolve2) => {
+    const req = http2.get(
+      { host, port, path: "/", headers: { cookie: cookieHeader(secret, authority) }, timeout: timeoutMs },
+      (res) => {
+        res.resume();
+        res.on("end", () => {
+          if (res.statusCode === 200) resolve2(true);
+          else if (res.statusCode === 401) resolve2(false);
+          else resolve2(void 0);
+        });
+      }
+    );
+    req.on("timeout", () => {
+      req.destroy();
+      resolve2(void 0);
+    });
+    req.on("error", () => resolve2(void 0));
+  });
+}
+async function selectBrowserSecret(candidates, host, port) {
+  const authority = authorityOf(host, port);
+  let fallback;
   for (const candidate of candidates) {
     const secret = readSecretFrom(candidate);
-    if (secret !== void 0) return secret;
+    if (secret === void 0) continue;
+    if (fallback === void 0) fallback = secret;
+    const accepted = await probeSecretAccepted(host, port, authority, secret);
+    if (accepted === true) return { secret, verified: true };
+    if (accepted === void 0) break;
   }
-  return void 0;
+  return fallback === void 0 ? void 0 : { secret: fallback, verified: false };
 }
 function probeRequiresAuth(host, port, timeoutMs = 3e3) {
   return new Promise((resolve2) => {
@@ -1408,12 +1434,21 @@ async function ensureInjectReady(runtime) {
   if (now - runtime.authProbedAt < PROBE_TTL_MS) return;
   runtime.authProbedAt = now;
   const requiresAuth = await probeRequiresAuth(runtime.targetHost, runtime.targetPort);
-  if (requiresAuth) {
-    const secret = resolveBrowserSecret(runtime.credentialPaths);
-    runtime.secret = secret ?? null;
-  } else {
+  if (!requiresAuth) {
     runtime.secret = null;
+    return;
   }
+  if (runtime.secret !== null) {
+    const accepted = await probeSecretAccepted(
+      runtime.targetHost,
+      runtime.targetPort,
+      runtime.authority,
+      runtime.secret
+    );
+    if (accepted !== false) return;
+  }
+  const choice = await selectBrowserSecret(runtime.credentialPaths, runtime.targetHost, runtime.targetPort);
+  runtime.secret = choice?.secret ?? null;
 }
 function hostOk(runtime, req) {
   const hostHeader = (req.headers.host ?? "").toLowerCase();
@@ -1475,13 +1510,13 @@ function writeDenied(res, message) {
 async function createWebProxy(opts) {
   const authority = authorityOf(opts.targetHost, opts.targetPort);
   const requiresAuth = await probeRequiresAuth(opts.targetHost, opts.targetPort);
-  const secret = resolveBrowserSecret(opts.credentialPaths);
-  if (requiresAuth && secret === void 0) {
+  const choice = requiresAuth ? await selectBrowserSecret(opts.credentialPaths, opts.targetHost, opts.targetPort) : void 0;
+  if (requiresAuth && choice === void 0) {
     throw new Error(
       `webProxy: \u76EE\u6807 dsh web \u9700\u8981\u6D4F\u89C8\u5668\u9274\u6743\uFF0C\u4F46\u672A\u627E\u5230\u4F1A\u8BDD\u7B7E\u540D\u5BC6\u94A5\uFF08\u8BD5\u8FC7: ${JSON.stringify(opts.credentialPaths)}\uFF09\u3002\u8BF7\u786E\u8BA4\u51ED\u8BC1\u5E93\u8DEF\u5F84\uFF0C\u6216\u6539\u7528\u300C\u5728\u7CFB\u7EDF\u6D4F\u89C8\u5668\u4E2D\u6253\u5F00\u300D`
     );
   }
-  const injectSecret = requiresAuth ? secret : null;
+  const injectSecret = requiresAuth ? choice.secret : null;
   const panelToken = (0, import_node_crypto2.randomBytes)(24).toString("base64url");
   const runtime = {
     authority,
@@ -2666,14 +2701,19 @@ var DshDockPlugin = class extends import_obsidian5.Plugin {
   }
   /**
    * 围绕真实 dsh web 端口起面板鉴权代理，并读取其浏览器会话签名密钥。
-   * 候选凭证库路径：per-vault 共享配置下密钥在 ~/.dsh/.credentials.yaml，
-   * 其次是本 dshHome / 常规 ~/.dsh，覆盖自建与挂接已有实例两种情形。
+   * 候选凭证库路径：先本 dshHome（per-vault 模式下即该实例真正使用的密钥），
+   * 再共享根 / 常规 ~/.dsh，覆盖自建与挂接已有实例两种情形。
+   * 注意：顺序只是「优先探测」的顺序，不是最终判据 —— 多套 DSH_HOME 并存时两边
+   * 都存有各自的 `client-connection/browser-session` 密钥，取错的那把会被上游 401
+   * 拒绝（症状：面板只剩 "dsh web authentication required"）。因此 webProxy
+   * 会用每把候选密钥各签一张 cookie 回打上游，取真正被接受的那把（见
+   * selectBrowserSecret）。
    */
   async createWebProxyFor(targetPort, dshHome, sharedConfigRoot) {
     const base = sharedConfigRoot ?? dshHome;
     const candidates = [
-      path3.join(base, ".credentials.yaml"),
       path3.join(dshHome, ".credentials.yaml"),
+      path3.join(base, ".credentials.yaml"),
       path3.join(os3.homedir(), ".dsh", ".credentials.yaml")
     ];
     return createWebProxy({

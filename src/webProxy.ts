@@ -136,13 +136,68 @@ function readSecretFrom(credentialPath: string): Buffer | undefined {
   }
 }
 
-/** 按候选路径依次尝试读取浏览器会话签名密钥 */
-export function resolveBrowserSecret(candidates: readonly string[]): Buffer | undefined {
+/**
+ * 用某把密钥按官方格式签发 cookie，探测上游是否真的接受它。
+ * 返回 true = 上游 200（密钥匹配）；false = 上游 401（密钥不属于该实例）；
+ * undefined = 无法判定（网络错误/超时/非 401-200 状态，如旧版无鉴权目标或异常状态码）。
+ */
+function probeSecretAccepted(
+  host: string,
+  port: number,
+  authority: string,
+  secret: Buffer,
+  timeoutMs = 3000,
+): Promise<boolean | undefined> {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host, port, path: '/', headers: { cookie: cookieHeader(secret, authority) }, timeout: timeoutMs },
+      (res) => {
+        res.resume()
+        res.on('end', () => {
+          if (res.statusCode === 200) resolve(true)
+          else if (res.statusCode === 401) resolve(false)
+          else resolve(undefined)
+        })
+      },
+    )
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(undefined)
+    })
+    req.on('error', () => resolve(undefined))
+  })
+}
+
+/**
+ * 选出「目标实例真正接受」的浏览器会话签名密钥。
+ *
+ * 为什么不能只按路径顺序取第一把：同一台机器上可以并存多套 DSH_HOME
+ * （per-vault 实例用 `<vaultHome>/.credentials.yaml`，共享 `dsh` 用
+ * `~/.dsh/.credentials.yaml`），两边的 `client-connection/browser-session`
+ * 是**两把不同的密钥**。只看「能否解析出 32 字节」会取到另一实例的密钥，
+ * 上游以 401 拒绝整张面板（症状：面板只剩 "dsh web authentication required"）。
+ * 故必须用候选密钥各签一张 cookie 回打上游，取真正被接受的那把。
+ *
+ * 兜底：若全部候选都无法判定（上游探测超时/异常状态），退回首个可解析密钥 ——
+ * 保持对旧行为与特殊部署的兼容，不因探测本身失败而让面板彻底起不来。
+ */
+async function selectBrowserSecret(
+  candidates: readonly string[],
+  host: string,
+  port: number,
+): Promise<{ secret: Buffer; verified: boolean } | undefined> {
+  const authority = authorityOf(host, port)
+  let fallback: Buffer | undefined
   for (const candidate of candidates) {
     const secret = readSecretFrom(candidate)
-    if (secret !== undefined) return secret
+    if (secret === undefined) continue
+    if (fallback === undefined) fallback = secret
+    const accepted = await probeSecretAccepted(host, port, authority, secret)
+    if (accepted === true) return { secret, verified: true }
+    // 探测无法判定：不再继续试（避免对同一上游连打多次无意义请求），直接用兜底密钥
+    if (accepted === undefined) break
   }
-  return undefined
+  return fallback === undefined ? undefined : { secret: fallback, verified: false }
 }
 
 export interface WebProxyOptions {
@@ -210,21 +265,34 @@ function probeRequiresAuth(host: string, port: number, timeoutMs = 3000): Promis
 }
 
 /**
- * 惰性刷新「是否注入 dsh-auth cookie」的决定。创建时一次性探测可能因 dsh web 尚未就绪
- * 而误判（返回 false → 永不注入 → 上游 401）。此函数按 PROBE_TTL_MS 复查：若探测到目标
- * 现在需要鉴权，则重新解析密钥并切换到注入模式，自愈该竞态。
+ * 惰性刷新「是否注入 dsh-auth cookie」以及「注入哪把密钥」的决定：
+ * - 创建时一次性探测可能因 dsh web 尚未就绪而误判（返回 false → 永不注入 → 上游 401）；
+ * - 也可能因目标实例被替换（挂接的旧实例退出后插件自起新实例、或用户在 per-vault /
+ *   共享模式间切换）而让手上的密钥换成另一套 DSH_HOME 的，导致上游持续 401。
+ * 故按 PROBE_TTL_MS 复查两项：目标是否仍需鉴权；现有密钥是否仍被上游接受。
+ * 密钥失效时重新按「上游实测」选择，自愈上述两种竞态，无需用户重开面板。
  */
 async function ensureInjectReady(runtime: ProxyRuntime): Promise<void> {
   const now = Date.now()
   if (now - runtime.authProbedAt < PROBE_TTL_MS) return
   runtime.authProbedAt = now
   const requiresAuth = await probeRequiresAuth(runtime.targetHost, runtime.targetPort)
-  if (requiresAuth) {
-    const secret = resolveBrowserSecret(runtime.credentialPaths)
-    runtime.secret = secret ?? null
-  } else {
+  if (!requiresAuth) {
     runtime.secret = null
+    return
   }
+  if (runtime.secret !== null) {
+    const accepted = await probeSecretAccepted(
+      runtime.targetHost,
+      runtime.targetPort,
+      runtime.authority,
+      runtime.secret,
+    )
+    // true = 仍被接受；undefined = 无法判定（保持现状，避免网络抖动导致反复重选）
+    if (accepted !== false) return
+  }
+  const choice = await selectBrowserSecret(runtime.credentialPaths, runtime.targetHost, runtime.targetPort)
+  runtime.secret = choice?.secret ?? null
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +398,12 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
   const authority = authorityOf(opts.targetHost, opts.targetPort)
   // 旧版 dsh web 无鉴权（/ 直接 200），只需透传；新版强制鉴权（/ 401），需注入 cookie。
   const requiresAuth = await probeRequiresAuth(opts.targetHost, opts.targetPort)
-  const secret = resolveBrowserSecret(opts.credentialPaths)
-  if (requiresAuth && secret === undefined) {
+  // 需要鉴权时按「上游是否真的接受」挑密钥：多套 DSH_HOME 并存时，路径顺序不可信
+  // （见 selectBrowserSecret 注释）。只有全部候选都无法判定时才退回首个可解析密钥。
+  const choice = requiresAuth
+    ? await selectBrowserSecret(opts.credentialPaths, opts.targetHost, opts.targetPort)
+    : undefined
+  if (requiresAuth && choice === undefined) {
     throw new Error(
       `webProxy: 目标 dsh web 需要浏览器鉴权，但未找到会话签名密钥（试过: ${JSON.stringify(opts.credentialPaths)}）。` +
       '请确认凭证库路径，或改用「在系统浏览器中打开」',
@@ -339,7 +411,7 @@ export async function createWebProxy(opts: WebProxyOptions): Promise<WebProxyHan
   }
   // 只在「目标确实需要鉴权」时才注入 cookie；无鉴权目标一律透传（不注入，
   // 避免覆盖客户端透传的其它 cookie）。若需鉴权但没密钥，上面已抛错。
-  const injectSecret: Buffer | null = requiresAuth ? (secret as Buffer) : null
+  const injectSecret: Buffer | null = requiresAuth ? (choice as { secret: Buffer }).secret : null
 
   const panelToken = randomBytes(24).toString('base64url')
   const runtime: ProxyRuntime = {

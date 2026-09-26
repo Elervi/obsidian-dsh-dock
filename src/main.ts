@@ -519,8 +519,13 @@ export default class DshDockPlugin extends Plugin {
 
   /**
    * 围绕真实 dsh web 端口起面板鉴权代理，并读取其浏览器会话签名密钥。
-   * 候选凭证库路径：per-vault 共享配置下密钥在 ~/.dsh/.credentials.yaml，
-   * 其次是本 dshHome / 常规 ~/.dsh，覆盖自建与挂接已有实例两种情形。
+   * 候选凭证库路径：先本 dshHome（per-vault 模式下即该实例真正使用的密钥），
+   * 再共享根 / 常规 ~/.dsh，覆盖自建与挂接已有实例两种情形。
+   * 注意：顺序只是「优先探测」的顺序，不是最终判据 —— 多套 DSH_HOME 并存时两边
+   * 都存有各自的 `client-connection/browser-session` 密钥，取错的那把会被上游 401
+   * 拒绝（症状：面板只剩 "dsh web authentication required"）。因此 webProxy
+   * 会用每把候选密钥各签一张 cookie 回打上游，取真正被接受的那把（见
+   * selectBrowserSecret）。
    */
   private async createWebProxyFor(
     targetPort: number,
@@ -529,8 +534,8 @@ export default class DshDockPlugin extends Plugin {
   ): Promise<WebProxyHandle> {
     const base = sharedConfigRoot ?? dshHome
     const candidates = [
-      path.join(base, '.credentials.yaml'),
       path.join(dshHome, '.credentials.yaml'),
+      path.join(base, '.credentials.yaml'),
       path.join(os.homedir(), '.dsh', '.credentials.yaml'),
     ]
     return createWebProxy({

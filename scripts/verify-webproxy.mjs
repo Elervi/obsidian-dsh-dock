@@ -56,6 +56,52 @@ function startUpstream({ authMode }) {
   })
 }
 
+// ---------- 严格 mock 上游：按官方算法校验 dsh-auth-* cookie ----------
+// 官方格式：cookie 名 = 'dsh-auth-' + base64url(sha256(authority))，
+// 值 = `v1.<base64url(JSON payload)>.<base64url(HMAC-SHA256(secret, body))>`。
+// 只有用本实例密钥签发的 cookie 才 200，别的实例的密钥一律 401。
+function startStrictUpstream({ secret: expected, gate }) {
+  return new Promise((resolve) => {
+    const { createHash, createHmac, timingSafeEqual } = require('node:crypto')
+    const server = http.createServer((req, res) => {
+      // gate 关：模拟「目标此刻还不需要鉴权」（旧版 / 尚未就绪），任何请求都 200
+      if (gate && !gate.on) {
+        res.writeHead(200, { 'content-type': 'text/html' })
+        res.end(`<html><title>DeepSeek Harness</title>STRICT_OPEN path=${req.url}</html>`)
+        return
+      }
+      const port = server.address().port
+      const authority = `127.0.0.1:${port}`
+      const name =
+        'dsh-auth-' +
+        createHash('sha256').update(authority).digest().toString('base64')
+          .replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '')
+      const raw = req.headers.cookie ?? ''
+      let value
+      for (const part of raw.split(';')) {
+        const eq = part.indexOf('=')
+        if (eq !== -1 && part.slice(0, eq).trim() === name) value = part.slice(eq + 1).trim()
+      }
+      const parts = (value ?? '').split('.')
+      let ok = false
+      if (parts.length === 3 && parts[0] === 'v1') {
+        const expectedSig = createHmac('sha256', expected).update(parts[1]).digest().toString('base64url')
+        const got = Buffer.from(parts[2])
+        const want = Buffer.from(expectedSig)
+        ok = got.length === want.length && timingSafeEqual(got, want)
+      }
+      if (!ok) {
+        res.writeHead(401, { 'content-type': 'text/plain' })
+        res.end('dsh web authentication required; reopen the URL printed by dsh web.')
+        return
+      }
+      res.writeHead(200, { 'content-type': 'text/html' })
+      res.end(`<html><title>DeepSeek Harness</title>STRICT_OK path=${req.url}</html>`)
+    })
+    server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port, close: () => new Promise((r) => server.close(r)) }))
+  })
+}
+
 // ---------- 测试助手 ----------
 let failed = 0
 function check(name, cond, extra = '') {
@@ -186,8 +232,57 @@ async function main() {
   nws = await wsHandshake(nPort, { cookie: `${ncn}=${nt}` })
   check('WS 带 panel cookie -> 101(无鉴权上游透传)', nws === '101', `status=${nws}`)
 
+  // ---------- 多套 DSH_HOME 并存：候选顺序里的第一把密钥是「别的实例的」 ----------
+  // 严格上游：按官方算法校验 dsh-auth-* cookie 的 HMAC，错的密钥一律 401。
+  const strict = await startStrictUpstream({ secret })
+  const wrongSecret = Buffer.alloc(32, 7)
+  const wrongCredDir = mkdtempSync(join(tmpdir(), 'wp-cred-wrong-'))
+  const wrongCredPath = join(wrongCredDir, '.credentials.yaml')
+  writeFileSync(wrongCredPath, `client-connection/browser-session:\n  secret: ${wrongSecret.toString('base64url')}\n`)
+
+  const pickProxy = await createWebProxy({
+    host: '127.0.0.1', port: 0,
+    targetHost: '127.0.0.1', targetPort: strict.port,
+    credentialPaths: [wrongCredPath, credPath],
+  })
+  const pt = pickProxy.panelToken
+  const pcn = pickProxy.cookieName
+  const pPort = pickProxy.port
+  console.log(`\n=== 严格鉴权上游 (${strict.port}) / 代理 :${pPort}（首个候选是错密钥） ===`)
+
+  r = await rawReq(pPort, { path: '/', headers: { Cookie: `${pcn}=${pt}` } })
+  check('错密钥排在候选首位时仍选中正确密钥 -> 200', r.status === 200, `status=${r.status}`)
+  check('严格上游确认签名有效(AUTH_OK)', r.body.includes('STRICT_OK'), `body=${r.body.slice(0, 60)}`)
+
+  // ---------- 自愈：代理先对着「无需鉴权」的目标建好，目标随后变严格 ----------
+  // 覆盖 ensureInjectReady 的惰性复查路径：创建时未注入 cookie，目标改为强制鉴权后
+  // 必须在一个 PROBE_TTL_MS 周期内自动补上「被目标真正接受」的那把密钥。
+  const gate = { on: false }
+  const flip = await startStrictUpstream({ secret, gate })
+  const flipProxy = await createWebProxy({
+    host: '127.0.0.1', port: 0,
+    targetHost: '127.0.0.1', targetPort: flip.port,
+    credentialPaths: [wrongCredPath, credPath],
+  })
+  const ft = flipProxy.panelToken
+  const fcn = flipProxy.cookieName
+  const fPort = flipProxy.port
+  console.log(`\n=== 鉴权状态中途切换上游 (${flip.port}) / 代理 :${fPort} ===`)
+
+  r = await rawReq(fPort, { path: '/', headers: { Cookie: `${fcn}=${ft}` } })
+  check('目标无需鉴权时透传 -> 200', r.status === 200, `status=${r.status}`)
+
+  gate.on = true
+  await new Promise((r2) => setTimeout(r2, 5500)) // > PROBE_TTL_MS
+  r = await rawReq(fPort, { path: '/', headers: { Cookie: `${fcn}=${ft}` } })
+  check('目标转为强制鉴权后自动补注入 -> 200(自愈)', r.status === 200, `status=${r.status}`)
+  check('自愈用的是被目标接受的密钥(STRICT_OK)', r.body.includes('STRICT_OK'), `body=${r.body.slice(0, 60)}`)
+
   console.log(`\n${failed === 0 ? 'ALL PASS ✅' : `${failed} 项失败 ✗`}`)
-  await Promise.all([authProxy.close(), naProxy.close(), upstreamAuth.close(), upstreamNoauth.close()])
+  await Promise.all([
+    authProxy.close(), naProxy.close(), pickProxy.close(), flipProxy.close(),
+    upstreamAuth.close(), upstreamNoauth.close(), strict.close(), flip.close(),
+  ])
   process.exit(failed === 0 ? 0 : 1)
 }
 
