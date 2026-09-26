@@ -8,7 +8,8 @@
     "build": "node esbuild.config.mjs",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "verify:proxy": "node scripts/verify-webproxy.mjs"
+    "verify:proxy": "node scripts/verify-webproxy.mjs",
+    "verify:ready": "node scripts/verify-ready.mjs"
   },
   "license": "MIT",
   "devDependencies": {

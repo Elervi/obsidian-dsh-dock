@@ -30,6 +30,10 @@ jobs:
         # 防止 Obsidian 实际运行过期 JS（esbuild 输出确定，重复构建应零差异）。
         run: git diff --exit-code -- main.js lib/
 
+      - name: Verify readiness gate
+        # 不依赖 dsh CLI 的纯 Node 回归：端口先开、前端后挂时（404 窗口）不得判就绪。
+        run: npm run verify:ready
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

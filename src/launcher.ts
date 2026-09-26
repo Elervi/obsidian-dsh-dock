@@ -295,11 +295,39 @@ export function isPortUp(host: string, port: number, timeoutMs = 1500): Promise<
   })
 }
 
-/** 轮询等待 HTTP 就绪；超时返回 false */
+/**
+ * dsh web 的「应用是否已挂载」判定：GET `/` 的响应状态属于
+ *   200 = 旧版无鉴权首页；401 = 新版浏览器鉴权提示（响应体即鉴权说明）；
+ *   3xx = 部署层重定向（保留兼容）。
+ * 冷启动期端口会**先**被 host 连接层占用（此时 `/` 返回 404 / 0 字节、且 CLI 尚未
+ * 打印 URL），前端与鉴权路由要再晚一点才挂上。CI（冷缓存 + 慢 runner）与首次
+ * 引导 profile 的机器上这个窗口能到数秒，只按「端口能连」判就绪会抢在挂载前拿到
+ * 404 —— 表现为面板白页/smoke 报「首页既不是 HTML 页面也不是 dsh 鉴权响应」。
+ * 因此就绪必须等到这里为 true，404/5xx/无响应一律继续等。
+ */
+function isWebMounted(host: string, port: number, timeoutMs = 1500): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get({ host, port, path: '/', timeout: timeoutMs }, (res) => {
+      res.resume()
+      const status = res.statusCode ?? 0
+      resolve(status === 200 || status === 401 || (status >= 300 && status < 400))
+    })
+    req.on('timeout', () => {
+      req.destroy()
+      resolve(false)
+    })
+    req.on('error', () => resolve(false))
+  })
+}
+
+/**
+ * 轮询等待「dsh web 应用真正挂载」；超时返回 false。
+ * 判据是 isWebMounted（200/401/3xx），不是「端口能连」——见 isWebMounted 注释。
+ */
 export async function waitForReady(host: string, port: number, timeoutMs = 120_000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    if (await isPortUp(host, port, 1500)) return true
+    if (await isWebMounted(host, port, 1500)) return true
     if (Date.now() > deadline) return false
     // globalThis.setTimeout：Node（smoke）与 Obsidian 渲染进程都可用，
     // 不引入 window 依赖（launcher 保持纯 Node 可测）。

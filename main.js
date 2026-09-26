@@ -202,10 +202,24 @@ function isPortUp(host, port, timeoutMs = 1500) {
     req.on("error", () => resolve2(false));
   });
 }
+function isWebMounted(host, port, timeoutMs = 1500) {
+  return new Promise((resolve2) => {
+    const req = http.get({ host, port, path: "/", timeout: timeoutMs }, (res) => {
+      res.resume();
+      const status = res.statusCode ?? 0;
+      resolve2(status === 200 || status === 401 || status >= 300 && status < 400);
+    });
+    req.on("timeout", () => {
+      req.destroy();
+      resolve2(false);
+    });
+    req.on("error", () => resolve2(false));
+  });
+}
 async function waitForReady(host, port, timeoutMs = 12e4) {
   const deadline = Date.now() + timeoutMs;
   for (; ; ) {
-    if (await isPortUp(host, port, 1500)) return true;
+    if (await isWebMounted(host, port, 1500)) return true;
     if (Date.now() > deadline) return false;
     await new Promise((r) => globalThis.setTimeout(r, 500));
   }
